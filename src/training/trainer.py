@@ -24,6 +24,7 @@ from src.utils import make_path, tensor2numpy
 
 
 class TEXTure:
+
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
         self.paint_step = 0
@@ -39,18 +40,28 @@ class TEXTure:
         self.final_renders_path = make_path(self.exp_path / 'results')
 
         self.init_logger()
+        utils.log_mem_stat()
+
         pyrallis.dump(self.cfg, (self.exp_path / 'config.yaml').open('w'))
 
         self.view_dirs = ['front', 'left', 'back', 'right', 'overhead', 'bottom']
         self.mesh_model = self.init_mesh_model()
+        utils.log_mem_stat()
         self.diffusion = self.init_diffusion()
+        utils.log_mem_stat()
         self.text_z, self.text_string = self.calc_text_embeddings()
         self.dataloaders = self.init_dataloaders()
+        utils.log_mem_stat()
         self.back_im = torch.Tensor(np.array(Image.open(self.cfg.guide.background_img).convert('RGB'))).to(
             self.device).permute(2, 0,
                                  1) / 255.0
 
+        self.log_image_cnt = 0
+
+
         logger.info(f'Successfully initialized {self.cfg.log.exp_name}')
+
+        utils.log_mem_stat()
 
     def init_mesh_model(self) -> nn.Module:
         cache_path = Path('cache') / Path(self.cfg.guide.shape_path).stem
@@ -75,7 +86,7 @@ class TEXTure:
                                           min_timestep=self.cfg.optim.min_timestep,
                                           max_timestep=self.cfg.optim.max_timestep,
                                           no_noise=self.cfg.optim.no_noise,
-                                          use_inpaint=True)
+                                          use_inpaint=True, trainer = self)
 
         for p in diffusion_model.parameters():
             p.requires_grad = False
@@ -83,8 +94,9 @@ class TEXTure:
 
     def calc_text_embeddings(self) -> Union[torch.Tensor, List[torch.Tensor]]:
         ref_text = self.cfg.guide.text
+        negative_prompt = self.cfg.guide.negative_prompt
         if not self.cfg.guide.append_direction:
-            text_z = self.diffusion.get_text_embeds([ref_text])
+            text_z = self.diffusion.get_text_embeds([ref_text], [negative_prompt])
             text_string = ref_text
         else:
             text_z = []
@@ -93,9 +105,8 @@ class TEXTure:
                 text = ref_text.format(d)
                 text_string.append(text)
                 logger.info(text)
-                negative_prompt = None
                 logger.info(negative_prompt)
-                text_z.append(self.diffusion.get_text_embeds([text], negative_prompt=negative_prompt))
+                text_z.append(self.diffusion.get_text_embeds([text], [negative_prompt]))
         return text_z, text_string
 
     def init_dataloaders(self) -> Dict[str, DataLoader]:
@@ -132,6 +143,10 @@ class TEXTure:
             self.evaluate(self.dataloaders['val'], self.eval_renders_path)
             self.mesh_model.train()
 
+            # TODO: Xiaofan: remove this.
+            if self.paint_step > 4:
+                break;
+
         self.mesh_model.change_default_to_median()
         logger.info('Finished Painting ^_^')
         logger.info('Saving the last result...')
@@ -148,7 +163,12 @@ class TEXTure:
         for i, data in enumerate(dataloader):
             preds, textures, depths, normals = self.eval_render(data)
 
+            # logger.info('Xiaofan before!')
+            # logger.info(preds[0])
             pred = tensor2numpy(preds[0])
+            # logger.info('Xiaofan after!')
+            # logger.info(pred)
+
 
             if save_as_video:
                 all_preds.append(pred)
@@ -161,10 +181,14 @@ class TEXTure:
                     torch.save(depths[0], save_path / f"{i:04d}_depth.pt")
 
         # Texture map is the same, so just take the last result
+        # logger.info('Xiaofan texture!')
+        # logger.info(textures[0])
         texture = tensor2numpy(textures[0])
+        logger.info('Saving last result in ' + save_path.__str__())
         Image.fromarray(texture).save(save_path / f"step_{self.paint_step:05d}_texture.png")
 
         if save_as_video:
+            logger.info('Saving As Video! ' + save_path.__str__())
             all_preds = np.stack(all_preds, axis=0)
 
             dump_vid = lambda video, name: imageio.mimsave(save_path / f"step_{self.paint_step:05d}_{name}.mp4", video,
@@ -191,6 +215,7 @@ class TEXTure:
 
     def paint_viewpoint(self, data: Dict[str, Any]):
         logger.info(f'--- Painting step #{self.paint_step} ---')
+        utils.log_mem_stat();
         theta, phi, radius = data['theta'], data['phi'], data['radius']
         # If offset of phi was set from code
         phi = phi - np.deg2rad(self.cfg.render.front_offset)
@@ -218,12 +243,25 @@ class TEXTure:
         meta_output = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                              use_meta_texture=True, render_cache=render_cache)
 
+                                     
+
+                                                
+        x_normals = outputs['normals'][:, -3:, :, :].clamp(0, 1)
+        y_normals = outputs['normals'][:, -2:, :, :].clamp(0, 1)
         z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
+        normals = outputs['normals'].clamp(0, 1)
         z_normals_cache = meta_output['image'].clamp(0, 1)
         edited_mask = meta_output['image'].clamp(0, 1)[:, 1:2]
 
+        logger.info("xiaofan z_normals shape:" + str(z_normals.shape))
+        logger.info("xiaofan normal shape:" + str(outputs['normals'].shape))
+
+        self.log_train_image(outputs['normals'], "normal_no_clamp")
+        self.log_train_image(normals, "normal_clamp")
         self.log_train_image(rgb_render, 'rendered_input')
         self.log_train_image(depth_render[0, 0], 'depth', colormap=True)
+        self.log_train_image(x_normals[0, 0], 'x_normals', colormap=True)
+        self.log_train_image(y_normals[0, 0], 'y_normals', colormap=True)
         self.log_train_image(z_normals[0, 0], 'z_normals', colormap=True)
         self.log_train_image(z_normals_cache[0, 0], 'z_normals_cache', colormap=True)
 
@@ -248,10 +286,11 @@ class TEXTure:
         if self.cfg.guide.reference_texture is not None and update_ratio < 0.01:
             logger.info(f'Update ratio {update_ratio:.5f} is small for an editing step, skipping')
             return
+        utils.log_mem_stat('before log traing image');
 
         self.log_train_image(rgb_render * (1 - update_mask), name='masked_input')
         self.log_train_image(rgb_render * refine_mask, name='refine_regions')
-
+        utils.log_mem_stat('after log traing image');
         # Crop to inner region based on object mask
         min_h, min_w, max_h, max_w = utils.get_nonzero_region(outputs['mask'][0, 0])
         crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
@@ -259,24 +298,81 @@ class TEXTure:
         cropped_depth_render = crop(depth_render)
         cropped_update_mask = crop(update_mask)
         self.log_train_image(cropped_rgb_render, name='cropped_input')
-
         checker_mask = None
+
+        #inpaint
         if self.paint_step > 1:
             checker_mask = self.generate_checkerboard(crop(update_mask), crop(refine_mask),
                                                       crop(generate_mask))
             self.log_train_image(F.interpolate(cropped_rgb_render, (512, 512)) * (1 - checker_mask),
                                  'checkerboard_input')
         self.diffusion.use_inpaint = self.cfg.guide.use_inpainting and self.paint_step > 1
-
-        cropped_rgb_output, steps_vis = self.diffusion.img2img_step(text_z, cropped_rgb_render.detach(),
+        inputs = cropped_rgb_render.detach()
+        if self.paint_step == 1:
+            inputs = None
+        impaint_img, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, inputs,
                                                                     cropped_depth_render.detach(),
                                                                     guidance_scale=self.cfg.guide.guidance_scale,
                                                                     strength=1.0, update_mask=cropped_update_mask,
+                                                                    refine_mask = refine_mask,
                                                                     fixed_seed=self.cfg.optim.seed,
                                                                     check_mask=checker_mask,
+                                                                    num_inference_steps = 20,
                                                                     intermediate_vis=self.cfg.log.vis_diffusion_steps)
-        self.log_train_image(cropped_rgb_output, name='direct_output')
-        self.log_diffusion_steps(steps_vis)
+        self.log_train_image(impaint_img, name='inpaint_out')
+        self.log_diffusion_steps(steps_vis, "inpaint")
+        logger.info("impaint.shape\n"+str( impaint_img.shape )+str(impaint_img.dtype))
+        #img2img
+        generator = torch.manual_seed(self.cfg.optim.seed)
+        with torch.autocast('cuda'):
+            cropped_rgb_output = self.diffusion.img2img_pipe(
+                prompt = text_string,
+                negative_prompt = self.cfg.guide.negative_prompt,
+                num_inference_steps=20, 
+                generator=generator, 
+                guidance_scale=self.cfg.guide.guidance_scale,
+                image=impaint_img, 
+                strength=0.3,
+            ).images[0]
+
+            self.log_train_image(cropped_rgb_output, name='img2img_out')
+
+        # mine img2img
+        self.diffusion.use_inpaint = False
+        img_latents, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, impaint_img,
+                                                                cropped_depth_render.detach(),
+                                                                guidance_scale=self.cfg.guide.guidance_scale,
+                                                                strength=0.3, 
+                                                                fixed_seed=self.cfg.optim.seed,
+                                                                num_inference_steps = 20,
+                                                                intermediate_vis=self.cfg.log.vis_diffusion_steps,
+                                                                return_latent = True,
+                                                                use_control_net = True,
+                                                                )
+        cropped_rgb_output = self.diffusion.decode_latents(img_latents)
+        self.log_train_image(cropped_rgb_output, name='refine_output')
+        logger.info("cropped_rgb_output.shape "+str(cropped_rgb_output.shape))
+        
+        self.log_diffusion_steps(steps_vis, "refine")
+
+        
+
+        # cropped_rgb_output = self.diffusion.upscaler(
+        #      prompt="",
+        #     image=img_latents,
+        #     num_inference_steps=20,
+        #     guidance_scale=0,
+        #     generator = generator,
+        #     output_type = "not pil :D"
+        # ).images[0]
+        #cropped_rgb_output = torch.from_numpy(cropped_rgb_output)
+        #cropped_rgb_output = torch.reshape(cropped_rgb_output, (1, cropped_rgb_output.shape[0], cropped_rgb_output.shape[1], -1))
+        #cropped_rgb_output = cropped_rgb_output.permute((0, 3, 1, 2))
+        #cropped_rgb_output = cropped_rgb_output.to(device=self.device)
+
+
+        logger.info("cropped_rgb_output.shape after upscale"+str(cropped_rgb_output.shape))
+        self.log_train_image(cropped_rgb_output, name='scaled_output')
 
         cropped_rgb_output = F.interpolate(cropped_rgb_output,
                                            (cropped_rgb_render.shape[2], cropped_rgb_render.shape[3]),
@@ -439,25 +535,48 @@ class TEXTure:
             blurred_render_update_mask[z_was_better] = 0
 
         render_update_mask = blurred_render_update_mask
-        self.log_train_image(rgb_output * render_update_mask, 'project_back_input')
+        self.log_part_image(rgb_output * render_update_mask, 'project_back_input')
+
+        temp_outputs = self.mesh_model.render(background=background,
+                                             render_cache=render_cache)
+        temp_rgb_render = temp_outputs['image']
+        self.log_part_image(temp_rgb_render * (render_update_mask), 'mask_render_out')
+        self.log_part_image(temp_rgb_render * (1-render_update_mask), '1_minus_mask_render_out')
+        
 
         # Update the normals
         z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
 
-        optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99),
-                                     eps=1e-15)
+        optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
+
+        fitting_cnt = 0
+
         for _ in tqdm(range(200), desc='fitting mesh colors'):
             optimizer.zero_grad()
             outputs = self.mesh_model.render(background=background,
                                              render_cache=render_cache)
             rgb_render = outputs['image']
+            fitting_cnt=fitting_cnt+1
+            if fitting_cnt % 50 == 0:
+                self.log_part_image(rgb_render, "part_rgb_render")
 
             mask = render_update_mask.flatten()
-            masked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)[:, :, mask > 0]
-            masked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)[:, :, mask > 0]
-            masked_mask = mask[mask > 0]
-            loss = ((masked_pred - masked_target.detach()).pow(2) * masked_mask).mean() + (
-                    (masked_pred - masked_pred.detach()).pow(2) * (1 - masked_mask)).mean()
+            #https://numpy.org/doc/stable/user/basics.indexing.html
+            # masked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)[:, :, mask > 0]
+            # masked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)[:, :, mask > 0]
+            
+            # masked_mask = mask[mask > 0]
+            # loss = ((masked_pred - masked_target.detach()).pow(2) * masked_mask).mean() + (
+            #       (masked_pred - masked_pred.detach()).pow(2) * (1 - masked_mask)).mean()
+
+            unmasked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)
+            unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)
+            unmasked_keep =  temp_rgb_render.reshape(1, temp_rgb_render.shape[1], -1)
+            
+            # self.log_part_loss(rgb_render, temp_rgb_render, "part loss")
+
+
+            loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * mask).sum() + ((unmasked_pred - unmasked_keep.detach()).pow(2) * (1-mask)).sum()
 
             meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                                   use_meta_texture=True, render_cache=render_cache)
@@ -471,20 +590,51 @@ class TEXTure:
             loss.backward()
             optimizer.step()
 
+        # unmasked_pred Shape:torch.Size([1, 3, 1440000])
+        logger.info("Xiaofan: unmasked_pred Shape:" + str(unmasked_pred.shape))
+        # ([1, 3, 1200, 1200])
+        logger.info("Xiaofan: rgb_render Shape:" + str(rgb_render.shape))
+        logger.info(str(rgb_output.shape))
+
+        self.log_part_loss(rgb_render, temp_rgb_render, "part loss")
+        self.log_part_image(rgb_render, "part_rgb_render")
+        
         return rgb_render, current_z_normals
+    
+    def log_part_image(self, tensor: torch.Tensor,  name: str, colormap=False):
+        # part_tensor = tensor[:, :, 375:443, 534:600]
+        # scaled_part = torch.nn.functional.interpolate(input = part_tensor, scale_factor = (16, 16))
+        # self.log_train_image(scaled_part, name, colormap)
 
-    def log_train_image(self, tensor: torch.Tensor, name: str, colormap=False):
+        self.log_train_image(tensor, name, colormap)
+
+    def log_part_loss(self, a: torch.Tensor , b: torch.Tensor, name):
+        x = a[:, :, 440:443, 534:537]
+        y = b[:, :, 440:443, 534:537]
+        loss = (x-y).pow(2).mean()
+        logger.info(name +": "+str(loss))
+
+
+    def log_train_image(self, tensor, name: str, colormap=False):
+        self.log_image_cnt += 1
+        image = None
         if self.cfg.log.log_images:
-            if colormap:
-                tensor = cm.seismic(tensor.detach().cpu().numpy())[:, :, :3]
+            if isinstance(tensor, torch.Tensor):
+                if colormap:
+                    tensor = cm.seismic(tensor.detach().cpu().numpy())[:, :, :3]
+                else:
+                    tensor = einops.rearrange(tensor, '(1) c h w -> h w c').detach().cpu().numpy()
+                image = Image.fromarray((tensor * 255).astype(np.uint8))
             else:
-                tensor = einops.rearrange(tensor, '(1) c h w -> h w c').detach().cpu().numpy()
-            Image.fromarray((tensor * 255).astype(np.uint8)).save(
-                self.train_renders_path / f'{self.paint_step:04d}_{name}.jpg')
+                image = tensor
+            if image.mode == 'RGBA':
+                image = image.convert('RGB')    
+            image.save(
+                self.train_renders_path / f'{self.paint_step:04d}_{self.log_image_cnt:04d}_{name}.jpg')
 
-    def log_diffusion_steps(self, intermediate_vis: List[Image.Image]):
+    def log_diffusion_steps(self, intermediate_vis: List[Image.Image], stage):
         if len(intermediate_vis) > 0:
-            step_folder = self.train_renders_path / f'{self.paint_step:04d}_diffusion_steps'
+            step_folder = self.train_renders_path / f'{self.paint_step:04d}_{stage}_diffusion_steps'
             step_folder.mkdir(exist_ok=True)
             for k, intermedia_res in enumerate(intermediate_vis):
                 intermedia_res.save(

@@ -2,15 +2,15 @@ log:
   exp_name: nascar
   save_interval: 18
 guide:
-  text: "A next gen nascar, {} view"
-  diffusion_name: stabilityai/stable-diffusion-2-depth
+  text: "A next gen nascar, (flat lighting photo) (CG unity 8k wallpaper),  the most beautiful artwork in the world"
+  negative_prompt: "blurry. low quality. canvas frame, ((disfigured)), ((bad art)), ((deformed)),((extra limbs)),((close up)),((b&w)), wierd colors, blurry, (((duplicate))), ((morbid)), ((mutilated)), [out of frame], extra fingers, mutated hands, ((poorly drawn hands)), ((poorly drawn face)), (((mutation))), (((deformed))), ((ugly)), blurry, ((bad anatomy)), (((bad proportions))), ((extra limbs)), cloned face, (((disfigured))), out of frame, ugly, extra limbs, (bad anatomy), gross proportions, (malformed limbs), ((missing arms)), ((missing legs)), (((extra arms))), (((extra legs))), mutated hands, (fused fingers), (too many fingers), (((long neck))), Photoshop, video game, ugly, tiling, poorly drawn hands, poorly drawn feet, poorly drawn face, out of frame, mutation, mutated, extra limbs, extra legs, extra arms, disfigured, deformed, cross-eye, body out of frame, blurry, bad art, bad anatomy, 3d render"
   shape_scale: 0.6
-  append_direction: True
+  append_direction: False
   shape_path: shapes/nascar.obj
   texture_resolution: 1024
   guidance_scale: 10
   texture_interpolation_mode: 'bilinear'
 optim:
-  seed: 2
+  seed: 52343
 render:
   front_offset: 0

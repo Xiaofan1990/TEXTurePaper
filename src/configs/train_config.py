@@ -35,6 +35,7 @@ class GuideConfig:
     """ Parameters defining the guidance """
     # Guiding text prompt
     text: str
+    negative_prompt: str
     # The mesh to paint
     shape_path: str = 'shapes/spot_triangulated.obj'
     # Append direction to text prompts
@@ -44,17 +45,21 @@ class GuideConfig:
     # Path to the TI embedding
     concept_path: Optional[Path] = None
     # A huggingface diffusion model to use
-    diffusion_name: str = 'stabilityai/stable-diffusion-2-depth'
+    diffusion_name: str = 'runwayml/stable-diffusion-v1-5'
+    # diffusion_name: str = 'lllyasviel/ControlNet/blob/main/models/control_sd15_depth.pth'
     # Scale of mesh in 1x1x1 cube
     shape_scale: float = 0.6
     # height of mesh
     dy: float = 0.25
     # texture image resolution
-    texture_resolution: int = 1024
+    texture_resolution: int = 2048
+    # texture_resolution: int = 1024
     # texture mapping interpolation mode from texture image, options: 'nearest', 'bilinear', 'bicubic'
     texture_interpolation_mode: str= 'bilinear'
     # Guidance scale for score distillation
-    guidance_scale: float = 7.5
+    # guidance_scale: float = 7.5
+    guidance_scale: float = 5
+    
     # Use inpainting in relevant iterations
     use_inpainting: bool = True
     # The texture before editing
@@ -64,7 +69,7 @@ class GuideConfig:
     # Whether to use background color or image
     use_background_color: bool = False
     # Background image to use
-    background_img: str = 'textures/brick_wall.png'
+    background_img: str = 'textures/blue.jpg'
     # Threshold for defining refine regions
     z_update_thr: float = 0.2
     # Some more strict masking for projecting back
@@ -104,7 +109,7 @@ class LogConfig:
     # Export a mesh
     save_mesh: bool = True
     # Whether to show intermediate diffusion visualizations
-    vis_diffusion_steps: bool = False
+    vis_diffusion_steps: bool = True
     # Whether to log intermediate images
     log_images: bool = True
 

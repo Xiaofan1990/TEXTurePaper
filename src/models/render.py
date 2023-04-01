@@ -98,6 +98,7 @@ class Renderer:
 
         image_features = kal.render.mesh.texture_mapping(uv_features, texture_map, mode=self.interpolation_mode)
         image_features = image_features * mask
+
         if background_type == 'white':
             image_features += 1 * (1 - mask)
         elif background_type == 'random':

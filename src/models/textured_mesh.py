@@ -295,6 +295,7 @@ class TexturedMeshModel(nn.Module):
         raise NotImplementedError
 
     def get_params(self):
+        # return [self.background_sphere_colors, self.texture_img]
         return [self.background_sphere_colors, self.texture_img, self.meta_texture_img]
 
     @torch.no_grad()

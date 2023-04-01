@@ -1,4 +1,4 @@
-from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler
+from diffusers import AutoencoderKL, UNet2DConditionModel, ControlNetModel, StableDiffusionImg2ImgPipeline, PNDMScheduler, StableDiffusionLatentUpscalePipeline, UniPCMultistepScheduler
 from huggingface_hub import hf_hub_download
 from transformers import CLIPTextModel, CLIPTokenizer, logging
 
@@ -15,13 +15,15 @@ from tqdm.auto import tqdm
 import cv2
 import numpy as np
 from PIL import Image
+from matplotlib import cm
 
-
+# https://jalammar.github.io/illustrated-stable-diffusion/
 class StableDiffusion(nn.Module):
     def __init__(self, device, model_name='CompVis/stable-diffusion-v1-4', concept_name=None, concept_path=None,
                  latent_mode=True,  min_timestep=0.02, max_timestep=0.98, no_noise=False,
-                 use_inpaint=False):
+                 use_inpaint=False, trainer=None):
         super().__init__()
+
 
         try:
             with open('./TOKEN', 'r') as f:
@@ -39,35 +41,63 @@ class StableDiffusion(nn.Module):
         self.min_step = int(self.num_train_timesteps * min_timestep)
         self.max_step = int(self.num_train_timesteps * max_timestep)
         self.use_inpaint = use_inpaint
+        self.trainer = trainer
 
         logger.info(f'loading stable diffusion with {model_name}...')
 
         # 1. Load the autoencoder model which will be used to decode the latents into image space. 
         self.vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", use_auth_token=self.token).to(self.device)
+        # self.vae = AutoencoderKL.from_pretrained(model_name, use_auth_token=self.token, torch_dtype=torch.float16).to(self.device)
+
+        self.vae.enable_xformers_memory_efficient_attention()
+
+        utils.log_mem_stat('vae')
 
         # 2. Load the tokenizer and text encoder to tokenize and encode the text. 
-        self.tokenizer = CLIPTokenizer.from_pretrained(model_name, subfolder='tokenizer', use_auth_token=self.token)
+        self.tokenizer = CLIPTokenizer.from_pretrained(model_name, subfolder='tokenizer', use_auth_token=self.token) # , torch_dtype=torch.float16)
+        # self.tokenizer.enable_xformers_memory_efficient_attention()
+
         self.text_encoder = CLIPTextModel.from_pretrained(model_name, subfolder='text_encoder',
                                                           use_auth_token=self.token).to(self.device)
+        #self.text_encoder.enable_xformers_memory_efficient_attention()
+                                                          
         self.image_encoder = None
         self.image_processor = None
 
-        # 3. The UNet model for generating the latents.
-        self.unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", use_auth_token=self.token).to(
-            self.device)
+        utils.log_mem_stat('text')
 
-        if self.use_inpaint:
-            self.inpaint_unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-inpainting",
-                                                                     subfolder="unet", use_auth_token=self.token).to(
+        # 3. The UNet model for generating the latents.
+        self.unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", use_auth_token=self.token, torch_dtype=torch.float16).to(
+            self.device)
+        # bottleneck
+        self.unet.enable_xformers_memory_efficient_attention()
+        utils.log_mem_stat('unet')
+
+        self.controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth", use_auth_token=self.token, torch_dtype=torch.float16).to(
                 self.device)
+
+        # self.upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler", torch_dtype=torch.float16).to(
+        #    self.device)
+
+        
+        if self.use_inpaint:
+            # self.inpaint_unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-inpainting",
+            self.inpaint_unet = UNet2DConditionModel.from_pretrained("runwayml/stable-diffusion-inpainting",
+                                                                     subfolder="unet", use_auth_token=self.token, torch_dtype=torch.float16).to(
+                self.device)
+
+            self.inpaint_unet.enable_xformers_memory_efficient_attention()
+            utils.log_mem_stat('inpaint')
 
 
         # 4. Create a scheduler for inference
-        self.scheduler = PNDMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
-                                       num_train_timesteps=self.num_train_timesteps, steps_offset=1,
-                                       skip_prk_steps=True)
+        self.scheduler = UniPCMultistepScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
+                                       num_train_timesteps=self.num_train_timesteps,)
+        logger.info("self.scheduler" + str(self.scheduler))
         # NOTE: Recently changed skip_prk_steps, need to see that works
         self.alphas = self.scheduler.alphas_cumprod.to(self.device)  # for convenience
+
+        self.img2img_pipe = StableDiffusionImg2ImgPipeline(self.vae, self.text_encoder, self.tokenizer, self.unet, self.scheduler, None, None).to(self.device)
 
         if concept_name is not None:
             self.load_concept(concept_name, concept_path)
@@ -114,9 +144,7 @@ class StableDiffusion(nn.Module):
         # Tokenize text and get embeddings
         text_input = self.tokenizer(prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
                                     truncation=True, return_tensors='pt')
-        logger.info(prompt)
-        logger.info(text_input.input_ids)
-
+        
         with torch.no_grad():
             text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
 
@@ -124,11 +152,16 @@ class StableDiffusion(nn.Module):
         if negative_prompt is None:
             negative_prompt = [''] * len(prompt)
         uncond_input = self.tokenizer(negative_prompt, padding='max_length',
-                                      max_length=self.tokenizer.model_max_length, return_tensors='pt')
+                                      max_length=self.tokenizer.model_max_length, truncation=True, return_tensors='pt')
+
+        logger.info("uncond_input.input_ids" + str(uncond_input.input_ids))
+        logger.info("text_input.input_ids" + str(text_input.input_ids))
+
 
         with torch.no_grad():
             uncond_embeddings = self.text_encoder(uncond_input.input_ids.to(self.device))[0]
 
+        logger.info("XIAOFAN text embedding"+str(uncond_embeddings.shape) +" "+str(text_embeddings.shape))
         # Cat for final embeddings
         text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
         return text_embeddings
@@ -175,9 +208,13 @@ class StableDiffusion(nn.Module):
         # text_embeddings is 2 512
         intermediate_results = []
 
+        if fixed_seed is not None:
+            seed_everything(fixed_seed)
+
         def sample(latents, depth_mask, strength, num_inference_steps, update_mask=None, check_mask=None,
                    masked_latents=None):
             self.scheduler.set_timesteps(num_inference_steps)
+        
             noise = None
             if latents is None:
                 # Last chanel is reserved for depth
@@ -191,8 +228,7 @@ class StableDiffusion(nn.Module):
                 # Strength has meaning only when latents are given
                 timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength)
                 latent_timestep = timesteps[:1]
-                if fixed_seed is not None:
-                    seed_everything(fixed_seed)
+                #Xiaofan:  what are we doing here? 
                 noise = torch.randn_like(latents)
                 if update_mask is not None:
                     # NOTE: I think we might want to use same noise?
@@ -208,10 +244,13 @@ class StableDiffusion(nn.Module):
 
             with torch.autocast('cuda'):
                 for i, t in tqdm(enumerate(timesteps)):
-                    is_inpaint_range = self.use_inpaint and (10 < i < 20)
+                    # is_inpaint_range = self.use_inpaint and (10 < i < 20)
+                    is_inpaint_range = self.use_inpaint and (10<i<int(len(timesteps) * check_mask_iters))  
                     mask_constraints_iters = True  # i < 20
                     is_inpaint_iter = is_inpaint_range  # and i %2 == 1
 
+
+                    # Xiaofan: what are we doing here? 
                     if not is_inpaint_range and mask_constraints_iters:
                         if update_mask is not None:
                             noised_truth = self.scheduler.add_noise(gt_latents, noise, t)
@@ -225,11 +264,12 @@ class StableDiffusion(nn.Module):
                     latent_model_input = torch.cat([latents] * 2)
                     latent_model_input = self.scheduler.scale_model_input(latent_model_input,
                                                                           t)  # NOTE: This does nothing
-
+                    # utils.log_mem_stat('tqdm '+str(i)+' '+str(t))
                     if is_inpaint_iter:
                         latent_mask = torch.cat([update_mask] * 2)
                         latent_image = torch.cat([masked_latents] * 2)
                         latent_model_input_inpaint = torch.cat([latent_model_input, latent_mask, latent_image], dim=1)
+                        # https://huggingface.co/docs/diffusers/v0.14.0/en/api/pipelines/stable_diffusion/inpaint#diffusers.StableDiffusionInpaintPipeline
                         with torch.no_grad():
                             noise_pred_inpaint = \
                                 self.inpaint_unet(latent_model_input_inpaint, t, encoder_hidden_states=text_embeddings)[
@@ -259,10 +299,16 @@ class StableDiffusion(nn.Module):
                         image = image.cpu().permute(0, 2, 3, 1).numpy()
                         image = Image.fromarray((image[0] * 255).round().astype("uint8"))
                         intermediate_results.append(image)
+                    # tps://huggingface.co/docs/diffusers/api/schedulers/overview
                     latents = self.scheduler.step(noise_pred, t, latents)['prev_sample']
 
             return latents
+#----------------------------------------------------------------------------------------
 
+
+        # vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        logger.info("Xiaofan vae_scale_factor: "+ str(2 ** (len(self.vae.config.block_out_channels) - 1)))
+        vae_scale_factor = 8 # depth_mask_size 512/vae_scale_factor
         depth_mask = F.interpolate(depth_mask, size=(64, 64), mode='bicubic',
                                    align_corners=False)
         masked_latents = None
@@ -271,12 +317,21 @@ class StableDiffusion(nn.Module):
         elif latent_mode:
             latents = inputs
         else:
-            pred_rgb_512 = F.interpolate(inputs, (512, 512), mode='bilinear',
+            # width = 512
+            width = 512
+            
+            pred_rgb_512 = F.interpolate(inputs, (width, width), mode='bilinear',
                                          align_corners=False)
             latents = self.encode_imgs(pred_rgb_512)
+            logger.info("xiaofan: latents "+str(latents.shape))
             if self.use_inpaint:
-                update_mask_512 = F.interpolate(update_mask, (512, 512))
+                update_mask_512 = F.interpolate(update_mask, (width, width))
+
                 masked_inputs = pred_rgb_512 * (update_mask_512 < 0.5) + 0.5 * (update_mask_512 >= 0.5)
+                # masked_inputs = pred_rgb_512 * (update_mask_512 < 0.5)
+                # self.trainer.log_train_image(pred_rgb_512 * (update_mask_512 < 0.5), "masked_inputs")
+                # self.trainer.log_train_image(masked_inputs, "masked_inputs_plus")
+
                 masked_latents = self.encode_imgs(masked_inputs)
 
         if update_mask is not None:
@@ -293,10 +348,182 @@ class StableDiffusion(nn.Module):
         with torch.no_grad():
             target_latents = sample(latents, depth_mask, strength=strength, num_inference_steps=num_inference_steps,
                                     update_mask=update_mask, check_mask=check_mask, masked_latents=masked_latents)
+            utils.log_mem_stat('decode_latents')
             target_rgb = self.decode_latents(target_latents)
 
         if latent_mode:
-            return target_rgb, target_latents
+            return target_latents, intermediate_results
+        else:
+            return target_rgb, intermediate_results
+
+
+    def img2img_step_with_controlnet(self, text_embeddings, inputs, depth_mask, guidance_scale=100, strength=0.5,
+                     num_inference_steps=20, update_mask=None, refine_mask=None, check_mask=None,
+                     fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False, return_latent = False, use_control_net = True):
+        # input is 1 3 512 512
+        # depth_mask is 1 1 512 512
+        # text_embeddings is 2 512
+        if fixed_seed is not None:
+            seed_everything(fixed_seed)
+        depth_image = torch.from_numpy(cm.seismic(depth_mask.detach().cpu().numpy()))
+        depth_image = depth_image[0][:,:,:,:3]
+        depth_image = depth_image.permute((0, 3, 1, 2))
+        depth_image = depth_image.to(device=self.device, dtype=self.controlnet.dtype)
+        self.trainer.log_train_image(depth_image, "depth image")
+        depth_image = F.interpolate(depth_image, (512, 512), mode='bilinear',
+                                         align_corners=False)
+        depth_image = torch.cat([depth_image] * 2)
+        
+        logger.info("xiaofan depth mask shape:"+str(depth_mask.shape)+" "+str(depth_mask.max()) + " "+str(depth_mask.min())+" "+str(depth_mask.dtype))
+        logger.info("xiaofan depth_image shape:"+str(depth_image.shape)+" "+str(depth_image.max()) + " "+str(depth_image.min())+" "+str(depth_image.dtype))
+        intermediate_results = []
+
+        def sample(latents, depth_image, strength, num_inference_steps, update_mask=None, check_mask=None,
+                   masked_latents=None):
+            self.scheduler.set_timesteps(num_inference_steps)
+            logger.info("timesteps: "+ str(self.scheduler.timesteps.shape))
+
+            noise = None
+            if (latents is not None) and (not self.use_inpaint):
+                noise = torch.randn_like(latents)
+                timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength)
+                latent_timestep = timesteps[:1]
+                latents = self.scheduler.add_noise(latents, noise, latent_timestep)
+            else:
+                latents = torch.randn(
+                    (text_embeddings.shape[0] // 2, self.unet.in_channels, 64,
+                        64),
+                    device=self.device)
+                noise = torch.zeros_like(latents);
+
+                latents = latents * self.scheduler.init_noise_sigma
+                timesteps = self.scheduler.timesteps
+
+            # self.trainer.log_train_image(self.decode_latents(latents), "latents_before_sampling")
+
+            logger.info("text_embeddings"+str(text_embeddings.shape))
+                
+            # Xiaofan TODO does it work? to match inpaint 2.0
+            # impaint_text_embedding = F.interpolate(text_embeddings, (1024),  mode='linear')
+            impaint_text_embedding = text_embeddings
+
+            logger.info("text_embeddings"+str(text_embeddings.shape))
+
+            with torch.autocast('cuda'):
+                for i, t in tqdm(enumerate(timesteps)):
+                    logger.info("Xiaofan: "+str(t))
+                    is_inpaint_iter = self.use_inpaint
+                    # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
+                    latent_model_input = torch.cat([latents] * 2)
+                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                    
+                    # latent model input v1.5 torch.Size([2, 4, 64, 64]) v2.0 impaint 2, 9 
+                    # embedding  sd v1.5 torch.Size([2, 77, 768])   sd 2.0 2.1 1024
+                    # torch.Size([2, 3, 512, 512])
+
+                    # print(str(control_net_latent_model_input.shape))
+                    # print(str(text_embeddings.shape))
+                    # print(str(depth_image.shape))
+
+                    # controlnet(s) inference
+                    if use_control_net:
+                        down_block_res_samples, mid_block_res_sample = self.controlnet(
+                            latent_model_input,
+                            t,
+                            encoder_hidden_states=text_embeddings,
+                            controlnet_cond=depth_image,
+                            return_dict=False,
+                        )
+                    else:
+                        down_block_res_samples = None
+                        mid_block_res_sample = None
+
+                    if is_inpaint_iter:
+                        latent_mask = torch.cat([update_mask] * 2)
+                        latent_image = torch.cat([masked_latents] * 2)
+                        latent_model_input_inpaint = torch.cat([latent_model_input, latent_mask, latent_image], dim=1)
+                        with torch.no_grad():
+                                
+                            noise_pred_inpaint = \
+                                self.inpaint_unet(latent_model_input_inpaint, t, encoder_hidden_states=impaint_text_embedding,
+                                down_block_additional_residuals=down_block_res_samples,
+                        mid_block_additional_residual=mid_block_res_sample,)[
+                                    'sample']
+                            noise_pred = noise_pred_inpaint
+                    else:
+                        with torch.no_grad():
+                            noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings,
+                            down_block_additional_residuals=down_block_res_samples,
+                        mid_block_additional_residual=mid_block_res_sample,)[
+                                'sample']
+
+                    # perform guidance
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+                    # compute the previous noisy sample x_t -> x_t-1
+
+                    if intermediate_vis:
+                        vis_alpha_t = torch.sqrt(self.scheduler.alphas_cumprod)
+                        vis_sigma_t = torch.sqrt(1 - self.scheduler.alphas_cumprod)
+                        a_t, s_t = vis_alpha_t[t], vis_sigma_t[t]
+                        vis_latents = (latents - s_t * noise) / a_t
+                        vis_latents = 1 / 0.18215 * vis_latents
+                        image = self.vae.decode(vis_latents).sample
+                        image = (image / 2 + 0.5).clamp(0, 1)
+                        image = image.cpu().permute(0, 2, 3, 1).numpy()
+                        image = Image.fromarray((image[0] * 255).round().astype("uint8"))
+                        intermediate_results.append(image)
+                    # tps://huggingface.co/docs/diffusers/api/schedulers/overview
+                    latents = self.scheduler.step(noise_pred, t, latents)['prev_sample']
+
+            return latents
+#----------------------------------------------------------------------------------------
+
+        masked_latents = None
+        if inputs is None:
+            latents = None
+        else:
+            # width = 512
+            width = 512
+            
+            pred_rgb_512 = F.interpolate(inputs, (width, width), mode='bilinear',
+                                         align_corners=False)
+            latents = self.encode_imgs(pred_rgb_512)
+            logger.info("xiaofan: latents "+str(latents.shape))
+            
+            if update_mask is not None:
+
+                update_mask_512 = F.interpolate(update_mask, (width, width))
+                refine_mask_512 = F.interpolate(refine_mask, (width, width))
+
+                update_mask_512[update_mask_512 < 0.5] = 0
+                update_mask_512[update_mask_512 >= 0.5] = 1
+                refine_mask_512[refine_mask_512 < 0.5] = 0
+                refine_mask_512[refine_mask_512 >= 0.5] = 1
+
+                masked_inputs = pred_rgb_512 * (update_mask_512 < 0.5) + 0.5 * (update_mask_512 >= 0.5)
+
+                # self.trainer.log_train_image(pred_rgb_512 * (update_mask_512 < 0.5), "masked_inputs")
+                self.trainer.log_train_image(pred_rgb_512, "pred_rgb_512")
+                self.trainer.log_train_image(masked_inputs, "masked_inputs")
+
+                masked_latents = self.encode_imgs(masked_inputs)
+
+        if update_mask is not None:
+            update_mask = F.interpolate(update_mask, (64, 64), mode='nearest')
+            update_mask[update_mask < 0.5] = 0
+            update_mask[update_mask >= 0.5] = 1
+        if check_mask is not None:
+            check_mask = F.interpolate(check_mask, (64, 64), mode='nearest')
+
+        with torch.no_grad():
+            target_latents = sample(latents, depth_image, strength=strength, num_inference_steps=num_inference_steps,
+                                    update_mask=update_mask, check_mask=check_mask, masked_latents=masked_latents)
+            utils.log_mem_stat('decode_latents')
+            target_rgb = self.decode_latents(target_latents)
+        if return_latent:
+            return target_latents, intermediate_results
         else:
             return target_rgb, intermediate_results
 
@@ -406,8 +633,12 @@ class StableDiffusion(nn.Module):
         return latents
 
     def decode_latents(self, latents):
+        logger.info("latents.dtype "+ str(latents.dtype))
+
         # latents = F.interpolate(latents, (64, 64), mode='bilinear', align_corners=False)
         latents = 1 / 0.18215 * latents
+
+        logger.info("latents.dtype "+ str(latents.dtype))
 
         with torch.no_grad():
             imgs = self.vae.decode(latents).sample
@@ -418,17 +649,18 @@ class StableDiffusion(nn.Module):
 
     def encode_imgs(self, imgs):
         # imgs: [B, 3, H, W]
-
+        # xiaofan why 2*imgs - 1
         imgs = 2 * imgs - 1
 
         posterior = self.vae.encode(imgs).latent_dist
-        latents = posterior.sample() * 0.18215
 
+        # https://github.com/huggingface/diffusers/issues/437#issuecomment-1356945792
+        latents = posterior.sample() * self.vae.config.scaling_factor 
         return latents
 
     def get_timesteps(self, num_inference_steps, strength):
         # get the original timestep using init_timestep
-        init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
+        init_timestep = int(min(strength, 0.999) * num_inference_steps)
 
         t_start = max(num_inference_steps - init_timestep, 0)
         timesteps = self.scheduler.timesteps[t_start:]
@@ -448,6 +680,7 @@ class StableDiffusion(nn.Module):
         # depth is in range of 20-1500 of size 1x384x384, normalized to -1 to 1, mean was -0.6
         # Resized to 64x64 # TODO: Understand range here
         depth_mask = 2.0 * (depth_mask - depth_mask.min()) / (depth_mask.max() - depth_mask.min()) - 1.0
+
         depth_mask = F.interpolate(depth_mask.unsqueeze(1), size=(height // 8, width // 8), mode='bicubic',
                                    align_corners=False)
 

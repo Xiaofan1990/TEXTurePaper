@@ -10,6 +10,7 @@ from PIL import Image
 import einops
 from matplotlib import cm
 import torch.nn.functional as F
+from loguru import logger
 
 
 def get_view_direction(thetas, phis, overhead, front):
@@ -120,3 +121,11 @@ def color_with_shade(color: List[float],z_normals:torch.Tensor,light_coef=0.7):
     shaded_color = torch.tensor(color).view(1, 3, 1, 1).to(
         z_normals.device) * normals_with_light
     return shaded_color
+
+def log_mem_stat(step=''):
+    logger.info('logging mem stat:'+step + '-------------------------------------')
+    mem_stats = torch.cuda.memory_stats()
+    for key,value in mem_stats.items():
+        if('bytes.all.current' in key):
+            logger.info(key +":" + str(value));
+
