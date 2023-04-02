@@ -144,8 +144,8 @@ class TEXTure:
             self.mesh_model.train()
 
             # TODO: Xiaofan: remove this.
-            if self.paint_step > 4:
-                break;
+            #if self.paint_step > 4:
+            #    break;
 
         self.mesh_model.change_default_to_median()
         logger.info('Finished Painting ^_^')
@@ -265,6 +265,7 @@ class TEXTure:
         self.log_train_image(z_normals[0, 0], 'z_normals', colormap=True)
         self.log_train_image(z_normals_cache[0, 0], 'z_normals_cache', colormap=True)
 
+
         # text embeddings
         if self.cfg.guide.append_direction:
             dirs = data['dir']  # [B,]
@@ -357,14 +358,15 @@ class TEXTure:
 
         
 
-        # cropped_rgb_output = self.diffusion.upscaler(
-        #      prompt="",
+        #cropped_rgb_output = self.diffusion.upscaler(
+        #     prompt = text_string,
+        #     negative_prompt = self.cfg.guide.negative_prompt,
         #     image=img_latents,
         #     num_inference_steps=20,
         #     guidance_scale=0,
         #     generator = generator,
         #     output_type = "not pil :D"
-        # ).images[0]
+        #).images[0]
         #cropped_rgb_output = torch.from_numpy(cropped_rgb_output)
         #cropped_rgb_output = torch.reshape(cropped_rgb_output, (1, cropped_rgb_output.shape[0], cropped_rgb_output.shape[1], -1))
         #cropped_rgb_output = cropped_rgb_output.permute((0, 3, 1, 2))
@@ -385,10 +387,11 @@ class TEXTure:
 
         # Project back
         object_mask = outputs['mask']
-        fitted_pred_rgb, _ = self.project_back(render_cache=render_cache, background=background, rgb_output=rgb_output,
+        fitted_pred_rgb, current_z_normal_fitted = self.project_back(render_cache=render_cache, background=background, rgb_output=rgb_output,
                                                object_mask=object_mask, update_mask=update_mask, z_normals=z_normals,
                                                z_normals_cache=z_normals_cache)
         self.log_train_image(fitted_pred_rgb, name='fitted')
+        self.log_train_image(current_z_normal_fitted[0, 0], 'current_z_normal_fitted', colormap=True)
 
         return
 
@@ -448,7 +451,9 @@ class TEXTure:
 
         refine_mask = torch.zeros_like(update_mask)
         refine_mask[z_normals > z_normals_cache[:, :1, :, :] + self.cfg.guide.z_update_thr] = 1
+        self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_0')
         if self.cfg.guide.initial_texture is None:
+            logger.info("refine_mask[z_normals_cache[:, :1, :, :] == 0] = 0")
             refine_mask[z_normals_cache[:, :1, :, :] == 0] = 0
         elif self.cfg.guide.reference_texture is not None:
             refine_mask[edited_mask == 0] = 0
@@ -458,16 +463,26 @@ class TEXTure:
             refine_mask[mask == 0] = 0
             # Don't use bad angles here
             refine_mask[z_normals < 0.4] = 0
+            logger.info("Don't use bad angles here!!!!!!")
         else:
             # Update all regions inside the object
             refine_mask[mask == 0] = 0
+        self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_1')
+        
 
-        refine_mask = torch.from_numpy(
-            cv2.erode(refine_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
+        # Xiaofan: avoid case where refine mask is around exact_generate_mask but got eroded. However, generate_mask is already extend in above code. Why it didn't help avoid tiaowen? 
+        refine_n_update_mask = refine_mask.clone()
+        refine_n_update_mask[exact_generate_mask==1] =1
+        refine_n_update_mask = torch.from_numpy(
+            cv2.erode(refine_n_update_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
             mask.device).unsqueeze(0).unsqueeze(0)
+        refine_mask[refine_n_update_mask==0] = 0
+
         refine_mask = torch.from_numpy(
             cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
             mask.device).unsqueeze(0).unsqueeze(0)
+
+        self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_2')
         update_mask[refine_mask == 1] = 1
 
         update_mask[torch.bitwise_and(object_mask == 0, generate_mask == 0)] = 0
@@ -544,12 +559,16 @@ class TEXTure:
         self.log_part_image(temp_rgb_render * (1-render_update_mask), '1_minus_mask_render_out')
         
 
-        # Update the normals
-        z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
+        # Update the max normals
+        # z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
+        z_normals_cache[:, 0, :, :] = z_normals_cache[:, 0, :, :] * (1-update_mask)+ update_mask * z_normals[:, 0, :, :]
+
 
         optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
 
         fitting_cnt = 0
+
+        last_z_normal_texture = self.mesh_model.meta_texture_img.detach()
 
         for _ in tqdm(range(200), desc='fitting mesh colors'):
             optimizer.zero_grad()
@@ -577,6 +596,7 @@ class TEXTure:
 
 
             loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * mask).sum() + ((unmasked_pred - unmasked_keep.detach()).pow(2) * (1-mask)).sum()
+            
 
             meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                                   use_meta_texture=True, render_cache=render_cache)

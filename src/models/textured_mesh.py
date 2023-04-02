@@ -120,8 +120,7 @@ class TexturedMeshModel(nn.Module):
         self.cache_path = cache_path
         self.num_features = 3
 
-        self.renderer = Renderer(device=self.device, dim=(render_grid_size, render_grid_size),
-                                 interpolation_mode=self.opt.texture_interpolation_mode)
+        self.renderer = Renderer(device=self.device, dim=(render_grid_size, render_grid_size))
         self.env_sphere, self.mesh = self.init_meshes()
         self.default_color = [0.8, 0.1, 0.8]
         self.background_sphere_colors, self.texture_img = self.init_paint()
@@ -357,7 +356,7 @@ class TexturedMeshModel(nn.Module):
             fp.write(f'map_Kd {name}albedo.png \n')
 
     def render(self, theta=None, phi=None, radius=None, background=None,
-               use_meta_texture=False, render_cache=None, use_median=False, dims=None):
+               use_meta_texture=False, render_cache=None, use_median=False, dims=None, mode=None ):
         if render_cache is None:
             assert theta is not None and phi is not None and radius is not None
         background_sphere_colors = self.background_sphere_colors[
@@ -396,7 +395,9 @@ class TexturedMeshModel(nn.Module):
                                                                                                      look_at_height=self.dy,
                                                                                                      render_cache=render_cache,
                                                                                                      dims=dims,
-                                                                                                     background_type=background_type)
+                                                                                                     background_type=background_type,
+                                                                                                     mode = mode,
+                                                                                                     )
 
         mask = mask.detach()
 

@@ -73,7 +73,10 @@ class Renderer:
 
 
     def render_single_view_texture(self, verts, faces, uv_face_attr, texture_map, elev=0, azim=0, radius=2,
-                                   look_at_height=0.0, dims=None, background_type='none', render_cache=None):
+                                   look_at_height=0.0, dims=None, background_type='none', render_cache=None, mode = None):
+        if mode is None:
+            mode = self.interpolation_mode
+        
         dims = self.dim if dims is None else dims
 
         if render_cache is None:
@@ -96,7 +99,7 @@ class Renderer:
             face_normals, uv_features, face_idx, depth_map = render_cache['face_normals'], render_cache['uv_features'], render_cache['face_idx'], render_cache['depth_map']
         mask = (face_idx > -1).float()[..., None]
 
-        image_features = kal.render.mesh.texture_mapping(uv_features, texture_map, mode=self.interpolation_mode)
+        image_features = kal.render.mesh.texture_mapping(uv_features, texture_map, mode=mode)
         image_features = image_features * mask
 
         if background_type == 'white':

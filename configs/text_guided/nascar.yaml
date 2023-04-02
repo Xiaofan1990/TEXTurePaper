@@ -9,7 +9,6 @@ guide:
   shape_path: shapes/nascar.obj
   texture_resolution: 1024
   guidance_scale: 10
-  texture_interpolation_mode: 'bilinear'
 optim:
   seed: 52343
 render:
