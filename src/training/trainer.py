@@ -475,11 +475,13 @@ class TEXTure:
         refine_n_update_mask = torch.from_numpy(
             cv2.erode(refine_n_update_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
+
         refine_mask[refine_n_update_mask==0] = 0
 
         refine_mask = torch.from_numpy(
             cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
+
 
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_2')
         update_mask[refine_mask == 1] = 1
@@ -544,10 +546,16 @@ class TEXTure:
 
         if self.cfg.guide.strict_projection:
             blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
+            #Xiaofan: why we need this? didn't we already consdierred this in update mask?
             # Do not use bad normals
             z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
             blurred_render_update_mask[z_was_better] = 0
-        # TODO why we need this? 
+        
+        # TODO ideally we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
+        z_is_too_bad = z_normals<0.51
+        blurred_render_update_mask[z_is_too_bad] = 0
+
+
         render_update_mask = blurred_render_update_mask
         self.log_part_image(rgb_output * render_update_mask, 'project_back_input')
 
