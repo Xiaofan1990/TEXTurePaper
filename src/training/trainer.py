@@ -319,6 +319,7 @@ class TEXTure:
                                                                     fixed_seed=self.cfg.optim.seed,
                                                                     check_mask=checker_mask,
                                                                     num_inference_steps = 20,
+                                                                    random_init_latent = True,
                                                                     intermediate_vis=self.cfg.log.vis_diffusion_steps)
         self.log_train_image(impaint_img, name='inpaint_out')
         self.log_diffusion_steps(steps_vis, "inpaint")
@@ -349,6 +350,8 @@ class TEXTure:
                                                                 intermediate_vis=self.cfg.log.vis_diffusion_steps,
                                                                 return_latent = True,
                                                                 use_control_net = True,
+                                                                random_init_latent = False,
+                                                                update_mask = cropped_update_mask,
                                                                 )
         cropped_rgb_output = self.diffusion.decode_latents(img_latents)
         self.log_train_image(cropped_rgb_output, name='refine_output')
@@ -544,20 +547,21 @@ class TEXTure:
 
         render_update_mask[update_mask == 0] = 0
 
-        blurred_render_update_mask = torch.from_numpy(
-            cv2.dilate(render_update_mask[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
-            render_update_mask.device).unsqueeze(0).unsqueeze(0)
-        blurred_render_update_mask = utils.gaussian_blur(blurred_render_update_mask, 21, 16)
+        blurred_render_update_mask = render_update_mask
+        #blurred_render_update_mask = torch.from_numpy(
+        #    cv2.dilate(render_update_mask[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
+        #    render_update_mask.device).unsqueeze(0).unsqueeze(0)
+        #blurred_render_update_mask = utils.gaussian_blur(blurred_render_update_mask, 21, 16)
 
         # Do not get out of the object
         blurred_render_update_mask[object_mask == 0] = 0
 
-        if self.cfg.guide.strict_projection:
-            blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
-            #Xiaofan: why we need this? didn't we already consdierred this in update mask?
-            # Do not use bad normals
-            z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
-            blurred_render_update_mask[z_was_better] = 0
+        #if self.cfg.guide.strict_projection:
+        #    blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
+        #    #Xiaofan: why we need this? didn't we already consdierred this in update mask?
+        #    # Do not use bad normals
+        #    z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
+        #    blurred_render_update_mask[z_was_better] = 0
         
         # TODO ideally we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
         z_is_too_bad = z_normals<0.51

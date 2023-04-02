@@ -1,3 +1,4 @@
+from pickle import TRUE
 from diffusers import AutoencoderKL, UNet2DConditionModel, ControlNetModel, StableDiffusionImg2ImgPipeline, PNDMScheduler, StableDiffusionLatentUpscalePipeline, UniPCMultistepScheduler
 from huggingface_hub import hf_hub_download
 from transformers import CLIPTextModel, CLIPTokenizer, logging
@@ -359,7 +360,7 @@ class StableDiffusion(nn.Module):
 
     def img2img_step_with_controlnet(self, text_embeddings, inputs, depth_mask, guidance_scale=100, strength=0.5,
                      num_inference_steps=20, update_mask=None, refine_mask=None, check_mask=None,
-                     fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False, return_latent = False, use_control_net = True):
+                     fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False, return_latent = False, use_control_net = True, random_init_latent = TRUE):
         # input is 1 3 512 512
         # depth_mask is 1 1 512 512
         # text_embeddings is 2 512
@@ -384,7 +385,7 @@ class StableDiffusion(nn.Module):
             logger.info("timesteps: "+ str(self.scheduler.timesteps.shape))
 
             noise = None
-            if (latents is not None) and (not self.use_inpaint):
+            if (latents is not None) and (not random_init_latent):
                 noise = torch.randn_like(latents)
                 timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength)
                 latent_timestep = timesteps[:1]
@@ -495,13 +496,10 @@ class StableDiffusion(nn.Module):
             if update_mask is not None:
 
                 update_mask_512 = F.interpolate(update_mask, (width, width))
-                refine_mask_512 = F.interpolate(refine_mask, (width, width))
-
+                
                 update_mask_512[update_mask_512 < 0.5] = 0
                 update_mask_512[update_mask_512 >= 0.5] = 1
-                refine_mask_512[refine_mask_512 < 0.5] = 0
-                refine_mask_512[refine_mask_512 >= 0.5] = 1
-
+                
                 masked_inputs = pred_rgb_512 * (update_mask_512 < 0.5) + 0.5 * (update_mask_512 >= 0.5)
 
                 # self.trainer.log_train_image(pred_rgb_512 * (update_mask_512 < 0.5), "masked_inputs")
