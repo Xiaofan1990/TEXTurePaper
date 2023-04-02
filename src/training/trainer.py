@@ -343,7 +343,7 @@ class TEXTure:
         img_latents, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, impaint_img,
                                                                 cropped_depth_render.detach(),
                                                                 guidance_scale=self.cfg.guide.guidance_scale,
-                                                                strength=0.3, 
+                                                                strength=0.2, 
                                                                 fixed_seed=self.cfg.optim.seed,
                                                                 num_inference_steps = 20,
                                                                 intermediate_vis=self.cfg.log.vis_diffusion_steps,
@@ -470,11 +470,10 @@ class TEXTure:
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_1')
         
 
-        # Xiaofan: avoid case where refine mask is around exact_generate_mask but got eroded. However, generate_mask is already extend in above code. Why it didn't help avoid tiaowen? 
         refine_n_update_mask = refine_mask.clone()
         refine_n_update_mask[exact_generate_mask==1] =1
         refine_n_update_mask = torch.from_numpy(
-            cv2.erode(refine_n_update_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
+            cv2.erode(refine_n_update_mask[0, 0].detach().cpu().numpy(), np.ones((2, 2), np.uint8))).to(
             mask.device).unsqueeze(0).unsqueeze(0)
         refine_mask[refine_n_update_mask==0] = 0
 
@@ -566,60 +565,59 @@ class TEXTure:
 
         optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
 
-        fitting_cnt = 0
-
-        last_z_normal_texture = self.mesh_model.meta_texture_img.detach()
-
-        for _ in tqdm(range(200), desc='fitting mesh colors'):
+        nearest_loss_raito = 0.1
+        
+        for i in tqdm(range(200), desc='fitting mesh colors'):
             optimizer.zero_grad()
-            outputs = self.mesh_model.render(background=background,
-                                             render_cache=render_cache)
-            rgb_render = outputs['image']
-            fitting_cnt=fitting_cnt+1
-            if fitting_cnt % 50 == 0:
-                self.log_part_image(rgb_render, "part_rgb_render")
-
-            mask = render_update_mask.flatten()
-            #https://numpy.org/doc/stable/user/basics.indexing.html
-            # masked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)[:, :, mask > 0]
-            # masked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)[:, :, mask > 0]
+            def color_loss(mode):
+                outputs = self.mesh_model.render(background=background, mode=mode, render_cache=render_cache)
+                rgb_render = outputs['image']
+                if i % 50 == 0:
+                    self.log_part_image(rgb_render, "part_rgb_render")
+                    
+                mask = render_update_mask.flatten()
+                #https://numpy.org/doc/stable/user/basics.indexing.html
+                # masked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)[:, :, mask > 0]
+                # masked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)[:, :, mask > 0]
             
-            # masked_mask = mask[mask > 0]
-            # loss = ((masked_pred - masked_target.detach()).pow(2) * masked_mask).mean() + (
-            #       (masked_pred - masked_pred.detach()).pow(2) * (1 - masked_mask)).mean()
+                # masked_mask = mask[mask > 0]
+                # loss = ((masked_pred - masked_target.detach()).pow(2) * masked_mask).mean() + (
+                #       (masked_pred - masked_pred.detach()).pow(2) * (1 - masked_mask)).mean()
 
-            unmasked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)
-            unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)
-            unmasked_keep =  temp_rgb_render.reshape(1, temp_rgb_render.shape[1], -1)
+                unmasked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)
+                unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)
+                unmasked_keep =  temp_rgb_render.reshape(1, temp_rgb_render.shape[1], -1)
+                return ((unmasked_pred - unmasked_target.detach()).pow(2) * mask).sum() + ((unmasked_pred - unmasked_keep.detach()).pow(2) * (1-mask)).sum()
             
-            # self.log_part_loss(rgb_render, temp_rgb_render, "part loss")
+                # self.log_part_loss(rgb_render, temp_rgb_render, "part loss")
 
-
-            loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * mask).sum() + ((unmasked_pred - unmasked_keep.detach()).pow(2) * (1-mask)).sum()
+            loss = color_loss("bilinear") + nearest_loss_raito*color_loss("nearest")
             
+            def z_normals_loss(mode):
+                meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
+                                                      use_meta_texture=True, render_cache=render_cache, mode=mode)
+                current_z_normals = meta_outputs['image']
+                current_z_mask = meta_outputs['mask'].flatten()
+                masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :,
+                                           current_z_mask == 1][:, :1]
+                masked_last_z_normals = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :,
+                                        current_z_mask == 1][:, :1]
+                return (masked_current_z_normals - masked_last_z_normals.detach()).pow(2).mean()
 
-            meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
-                                                  use_meta_texture=True, render_cache=render_cache)
-            current_z_normals = meta_outputs['image']
-            current_z_mask = meta_outputs['mask'].flatten()
-            masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :,
-                                       current_z_mask == 1][:, :1]
-            masked_last_z_normals = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :,
-                                    current_z_mask == 1][:, :1]
-            loss += (masked_current_z_normals - masked_last_z_normals.detach()).pow(2).mean()
+            loss+= z_normals_loss("bilinear") + nearest_loss_raito*z_normals_loss("nearest")
+
             loss.backward()
             optimizer.step()
 
-        # unmasked_pred Shape:torch.Size([1, 3, 1440000])
-        logger.info("Xiaofan: unmasked_pred Shape:" + str(unmasked_pred.shape))
-        # ([1, 3, 1200, 1200])
-        logger.info("Xiaofan: rgb_render Shape:" + str(rgb_render.shape))
-        logger.info(str(rgb_output.shape))
 
-        self.log_part_loss(rgb_render, temp_rgb_render, "part loss")
-        self.log_part_image(rgb_render, "part_rgb_render")
+        fitted_rgb = self.mesh_model.render(background=background, render_cache=render_cache)['image']
+        self.log_part_loss(fitted_rgb, temp_rgb_render, "part loss")
+        self.log_part_image(fitted_rgb, "part_fitted_rgb")
         
-        return rgb_render, current_z_normals
+        fitted_z_normals = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
+                                                      use_meta_texture=True, render_cache=render_cache)['image']
+
+        return fitted_rgb, fitted_z_normals
     
     def log_part_image(self, tensor: torch.Tensor,  name: str, colormap=False):
         # part_tensor = tensor[:, :, 375:443, 534:600]

@@ -120,7 +120,8 @@ class TexturedMeshModel(nn.Module):
         self.cache_path = cache_path
         self.num_features = 3
 
-        self.renderer = Renderer(device=self.device, dim=(render_grid_size, render_grid_size))
+        self.renderer = Renderer(device=self.device, dim=(render_grid_size, render_grid_size),
+                                                           interpolation_mode=self.opt.texture_interpolation_mode)
         self.env_sphere, self.mesh = self.init_meshes()
         self.default_color = [0.8, 0.1, 0.8]
         self.background_sphere_colors, self.texture_img = self.init_paint()
