@@ -469,16 +469,16 @@ class TEXTure:
             refine_mask[mask == 0] = 0
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_1')
         
-
+        kernel = np.ones((2, 2), np.uint8)
         refine_n_update_mask = refine_mask.clone()
         refine_n_update_mask[exact_generate_mask==1] =1
         refine_n_update_mask = torch.from_numpy(
-            cv2.erode(refine_n_update_mask[0, 0].detach().cpu().numpy(), np.ones((2, 2), np.uint8))).to(
+            cv2.erode(refine_n_update_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
         refine_mask[refine_n_update_mask==0] = 0
 
         refine_mask = torch.from_numpy(
-            cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
+            cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
 
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_2')
