@@ -339,8 +339,8 @@ class TEXTure:
 
             self.log_train_image(cropped_rgb_output, name='img2img_out')
 
-        # mine img2img
-        self.diffusion.use_inpaint = False
+        # mine img2img Xiaofan: if not using impaint, pleasde remove update mask as well.
+        self.diffusion.use_inpaint = True
         img_latents, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, impaint_img,
                                                                 cropped_depth_render.detach(),
                                                                 guidance_scale=self.cfg.guide.guidance_scale,
