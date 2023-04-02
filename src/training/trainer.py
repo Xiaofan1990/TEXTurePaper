@@ -547,7 +547,7 @@ class TEXTure:
             # Do not use bad normals
             z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
             blurred_render_update_mask[z_was_better] = 0
-
+        # TODO why we need this? 
         render_update_mask = blurred_render_update_mask
         self.log_part_image(rgb_output * render_update_mask, 'project_back_input')
 
@@ -569,13 +569,13 @@ class TEXTure:
         
         for i in tqdm(range(200), desc='fitting mesh colors'):
             optimizer.zero_grad()
+            mask = render_update_mask.flatten()
             def color_loss(mode):
                 outputs = self.mesh_model.render(background=background, mode=mode, render_cache=render_cache)
                 rgb_render = outputs['image']
                 if i % 50 == 0:
                     self.log_part_image(rgb_render, "part_rgb_render")
                     
-                mask = render_update_mask.flatten()
                 #https://numpy.org/doc/stable/user/basics.indexing.html
                 # masked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)[:, :, mask > 0]
                 # masked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)[:, :, mask > 0]
@@ -587,7 +587,7 @@ class TEXTure:
                 unmasked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)
                 unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)
                 unmasked_keep =  temp_rgb_render.reshape(1, temp_rgb_render.shape[1], -1)
-                return ((unmasked_pred - unmasked_target.detach()).pow(2) * mask).sum() + ((unmasked_pred - unmasked_keep.detach()).pow(2) * (1-mask)).sum()
+                return ((unmasked_pred - unmasked_target.detach()).pow(2) * mask).sum() # + ((unmasked_pred - unmasked_keep.detach()).pow(2) * (1-mask)).sum()
             
                 # self.log_part_loss(rgb_render, temp_rgb_render, "part loss")
 
@@ -598,11 +598,11 @@ class TEXTure:
                                                       use_meta_texture=True, render_cache=render_cache, mode=mode)
                 current_z_normals = meta_outputs['image']
                 current_z_mask = meta_outputs['mask'].flatten()
-                masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :,
-                                           current_z_mask == 1][:, :1]
-                masked_last_z_normals = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :,
-                                        current_z_mask == 1][:, :1]
-                return (masked_current_z_normals - masked_last_z_normals.detach()).pow(2).mean()
+                # combined_mask = torch.bitwise_and(current_z_mask, update_mask)
+                masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :1]
+                masked_last_z_normals = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :1]
+
+                return ((masked_current_z_normals - masked_last_z_normals.detach()).pow(2) *current_z_mask * mask).mean()
 
             loss+= z_normals_loss("bilinear") + nearest_loss_raito*z_normals_loss("nearest")
 
