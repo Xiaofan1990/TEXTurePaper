@@ -429,6 +429,25 @@ class TEXTure:
 
         return rgb_render, texture_rgb, depth_render, pred_z_normals
 
+    # remove small pointed gaps from area. Which will help avoid grey patterns painted by inpaint.        
+    def remove_small_gap(self, mask, kernel):
+        mask = torch.from_numpy(
+            cv2.dilate(mask[0, 0].detach().cpu().numpy(), kernel)).to(
+            mask.device).unsqueeze(0).unsqueeze(0)
+        mask = torch.from_numpy(
+            cv2.erode(mask[0, 0].detach().cpu().numpy(), kernel)).to(
+            mask.device).unsqueeze(0).unsqueeze(0)
+        return mask
+
+    def remove_small_area(self, mask, kernel):
+        mask = torch.from_numpy(
+            cv2.erode(mask[0, 0].detach().cpu().numpy(), kernel)).to(
+            mask.device).unsqueeze(0).unsqueeze(0)
+        mask = torch.from_numpy(
+            cv2.dilate(mask[0, 0].detach().cpu().numpy(), kernel)).to(
+            mask.device).unsqueeze(0).unsqueeze(0)
+        return mask
+
     def calculate_trimap(self, rgb_render_raw: torch.Tensor,
                          depth_render: torch.Tensor,
                          z_normals: torch.Tensor, z_normals_cache: torch.Tensor, edited_mask: torch.Tensor,
@@ -441,19 +460,16 @@ class TEXTure:
 
         ## only expand when smaller than kernal to prevent over expanding generate mask
         kernel = np.ones((19, 19), np.uint8)
-        generate_mask = torch.from_numpy(
-            cv2.erode(exact_generate_mask[0, 0].detach().cpu().numpy(), kernel)).to(
-            exact_generate_mask.device).unsqueeze(0).unsqueeze(0)
-        generate_mask = torch.from_numpy(
-            cv2.dilate(generate_mask[0, 0].detach().cpu().numpy(), kernel)).to(
-            generate_mask.device).unsqueeze(0).unsqueeze(0)
-
+        generate_mask = self.remove_small_area(exact_generate_mask, kernel)
         generate_mask = exact_generate_mask - generate_mask
         # Extpand generate mask
         generate_mask = torch.from_numpy(
             cv2.dilate(generate_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             generate_mask.device).unsqueeze(0).unsqueeze(0)
         generate_mask[exact_generate_mask==1]=1
+
+        generate_mask = self.remove_small_gap(generate_mask, np.ones((3, 3), np.uint8))
+
 
         update_mask = generate_mask.clone()
 
@@ -491,21 +507,13 @@ class TEXTure:
         refine_n_update_mask = torch.from_numpy(
             cv2.erode(refine_n_update_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
-
         refine_mask[refine_n_update_mask==0] = 0
-
         refine_mask = torch.from_numpy(
             cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
 
         # remove small pointed gaps from refine area. Which will help avoid grey patterns painted by inpaint.
-        kernel = np.ones((3, 3), np.uint8)
-        refine_mask = torch.from_numpy(
-            cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), kernel)).to(
-            mask.device).unsqueeze(0).unsqueeze(0)
-        refine_mask = torch.from_numpy(
-            cv2.erode(refine_mask[0, 0].detach().cpu().numpy(), kernel)).to(
-            mask.device).unsqueeze(0).unsqueeze(0)
+        refine_mask = self.remove_small_gap(refine_mask, np.ones((3, 3), np.uint8))
 
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_2')
         update_mask[refine_mask == 1] = 1
