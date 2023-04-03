@@ -499,7 +499,7 @@ class TEXTure:
             mask.device).unsqueeze(0).unsqueeze(0)
 
         # remove small pointed gaps from refine area. Which will help avoid grey patterns painted by inpaint.
-        kernel = np.ones((2, 2), np.uint8)
+        kernel = np.ones((3, 3), np.uint8)
         refine_mask = torch.from_numpy(
             cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
