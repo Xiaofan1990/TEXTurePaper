@@ -76,9 +76,11 @@ class StableDiffusion(nn.Module):
 
         self.controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth", use_auth_token=self.token, torch_dtype=torch.float16).to(
                 self.device)
+        self.controlnet.enable_xformers_memory_efficient_attention()
 
-        #self.upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler", torch_dtype=torch.float16).to(
-        #    self.device)
+        self.upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler", torch_dtype=torch.float16).to(
+            self.device)
+        self.upscaler.enable_xformers_memory_efficient_attention()
 
         
         if self.use_inpaint:

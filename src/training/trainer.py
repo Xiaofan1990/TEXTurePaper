@@ -366,9 +366,9 @@ class TEXTure:
         #     negative_prompt = self.cfg.guide.negative_prompt,
         #     image=img_latents,
         #     num_inference_steps=20,
-        #     guidance_scale=0,
+        #     guidance_scale=7.5,
         #     generator = generator,
-        #     output_type = "not pil :D"
+        #     output_type = "not pil :d"
         #).images[0]
         #cropped_rgb_output = torch.from_numpy(cropped_rgb_output)
         #cropped_rgb_output = torch.reshape(cropped_rgb_output, (1, cropped_rgb_output.shape[0], cropped_rgb_output.shape[1], -1))
@@ -435,6 +435,7 @@ class TEXTure:
                          mask: torch.Tensor):
         diff = (rgb_render_raw.detach() - torch.tensor(self.mesh_model.default_color).view(1, 3, 1, 1).to(
             self.device)).abs().sum(axis=1)
+        # xiaofan why to float()?
         exact_generate_mask = (diff < 0.1).float().unsqueeze(0)
 
 
