@@ -437,10 +437,22 @@ class TEXTure:
             self.device)).abs().sum(axis=1)
         exact_generate_mask = (diff < 0.1).float().unsqueeze(0)
 
-        # Extend mask
+
+        ## only expand when smaller than kernal to prevent over expanding generate mask
+        kernel = np.ones((19, 19), np.uint8)
         generate_mask = torch.from_numpy(
-            cv2.dilate(exact_generate_mask[0, 0].detach().cpu().numpy(), np.ones((19, 19), np.uint8))).to(
+            cv2.erode(exact_generate_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             exact_generate_mask.device).unsqueeze(0).unsqueeze(0)
+        generate_mask = torch.from_numpy(
+            cv2.dilate(generate_mask[0, 0].detach().cpu().numpy(), kernel)).to(
+            generate_mask.device).unsqueeze(0).unsqueeze(0)
+
+        generate_mask = exact_generate_mask - generate_mask
+        # Extpand generate mask
+        generate_mask = torch.from_numpy(
+            cv2.dilate(generate_mask[0, 0].detach().cpu().numpy(), kernel)).to(
+            generate_mask.device).unsqueeze(0).unsqueeze(0)
+        generate_mask[exact_generate_mask==1]=1
 
         update_mask = generate_mask.clone()
 
@@ -474,7 +486,7 @@ class TEXTure:
         
         kernel = np.ones((2, 2), np.uint8)
         refine_n_update_mask = refine_mask.clone()
-        refine_n_update_mask[exact_generate_mask==1] =1
+        refine_n_update_mask[update_mask==1] =1
         refine_n_update_mask = torch.from_numpy(
             cv2.erode(refine_n_update_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
@@ -503,20 +515,20 @@ class TEXTure:
         if self.cfg.log.log_images:
             trimap_vis = utils.color_with_shade(color=[112 / 255.0, 173 / 255.0, 71 / 255.0], z_normals=z_normals)
             trimap_vis[mask.repeat(1, 3, 1, 1) == 0] = 1
-            trimap_vis = trimap_vis * (1 - exact_generate_mask) + utils.color_with_shade(
+            trimap_vis = trimap_vis * (1 - generate_mask) + utils.color_with_shade(
                 [255 / 255.0, 22 / 255.0, 67 / 255.0],
                 z_normals=z_normals,
-                light_coef=0.7) * exact_generate_mask
+                light_coef=0.7) * generate_mask
 
             shaded_rgb_vis = rgb_render_raw.detach()
-            shaded_rgb_vis = shaded_rgb_vis * (1 - exact_generate_mask) + utils.color_with_shade([0.85, 0.85, 0.85],
+            shaded_rgb_vis = shaded_rgb_vis * (1 - generate_mask) + utils.color_with_shade([0.85, 0.85, 0.85],
                                                                                                  z_normals=z_normals,
-                                                                                                 light_coef=0.7) * exact_generate_mask
+                                                                                                 light_coef=0.7) * generate_mask
 
             if self.paint_step > 1 or self.cfg.guide.initial_texture is not None:
                 refinement_color_shaded = utils.color_with_shade(color=[91 / 255.0, 155 / 255.0, 213 / 255.0],
                                                                  z_normals=z_normals)
-                only_old_mask_for_vis = torch.bitwise_and(refine_mask == 1, exact_generate_mask == 0).float().detach()
+                only_old_mask_for_vis = torch.bitwise_and(refine_mask == 1, generate_mask == 0).float().detach()
                 trimap_vis = trimap_vis * 0 + 1.0 * (trimap_vis * (
                         1 - only_old_mask_for_vis) + refinement_color_shaded * only_old_mask_for_vis)
             self.log_train_image(shaded_rgb_vis, 'shaded_input')
@@ -548,20 +560,20 @@ class TEXTure:
         render_update_mask[update_mask == 0] = 0
 
         blurred_render_update_mask = render_update_mask
-        #blurred_render_update_mask = torch.from_numpy(
-        #    cv2.dilate(render_update_mask[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
-        #    render_update_mask.device).unsqueeze(0).unsqueeze(0)
-        #blurred_render_update_mask = utils.gaussian_blur(blurred_render_update_mask, 21, 16)
+        blurred_render_update_mask = torch.from_numpy(
+            cv2.dilate(render_update_mask[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
+            render_update_mask.device).unsqueeze(0).unsqueeze(0)
+        blurred_render_update_mask = utils.gaussian_blur(blurred_render_update_mask, 21, 16)
 
         # Do not get out of the object
         blurred_render_update_mask[object_mask == 0] = 0
 
-        #if self.cfg.guide.strict_projection:
-        #    blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
-        #    #Xiaofan: why we need this? didn't we already consdierred this in update mask?
-        #    # Do not use bad normals
-        #    z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
-        #    blurred_render_update_mask[z_was_better] = 0
+        if self.cfg.guide.strict_projection:
+            blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
+            #Xiaofan: why we need this? didn't we already consdierred this in update mask?
+            # Do not use bad normals
+            z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
+            blurred_render_update_mask[z_was_better] = 0
         
         # TODO ideally we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
         z_is_too_bad = z_normals<0.51
