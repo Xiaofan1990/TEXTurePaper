@@ -569,35 +569,35 @@ class TEXTure:
         render_update_mask[update_mask == 0] = 0
 
         blurred_render_update_mask = render_update_mask
-        blurred_render_update_mask = torch.from_numpy(
-            cv2.dilate(render_update_mask[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
-            render_update_mask.device).unsqueeze(0).unsqueeze(0)
-        blurred_render_update_mask = utils.gaussian_blur(blurred_render_update_mask, 21, 16)
+        #blurred_render_update_mask = torch.from_numpy(
+        #    cv2.dilate(render_update_mask[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
+        #    render_update_mask.device).unsqueeze(0).unsqueeze(0)
+        #blurred_render_update_mask = utils.gaussian_blur(blurred_render_update_mask, 21, 16)
 
         # Do not get out of the object
         blurred_render_update_mask[object_mask == 0] = 0
 
-        if self.cfg.guide.strict_projection:
-            blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
-            #Xiaofan: why we need this? didn't we already consdierred this in update mask?
-            # Do not use bad normals
-            z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
-            blurred_render_update_mask[z_was_better] = 0
+        #if self.cfg.guide.strict_projection:
+        #    blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
+        #    #Xiaofan: why we need this? didn't we already consdierred this in update mask?
+        #    # Do not use bad normals
+        #    z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
+        #    blurred_render_update_mask[z_was_better] = 0
         
+        transition_mask = 1- blurred_render_update_mask
+
         # TODO ideally we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
         z_is_too_bad = z_normals<0.51
         blurred_render_update_mask[z_is_too_bad] = 0
+        transition_mask[z_is_too_bad] = 0
 
-
-        render_update_mask = blurred_render_update_mask
-        self.log_part_image(rgb_output * render_update_mask, 'project_back_input')
 
         temp_outputs = self.mesh_model.render(background=background,
                                              render_cache=render_cache)
         temp_rgb_render = temp_outputs['image']
-        self.log_part_image(temp_rgb_render * (render_update_mask), 'mask_render_out')
-        self.log_part_image(temp_rgb_render * (1-render_update_mask), '1_minus_mask_render_out')
-        
+        self.log_train_image(rgb_output * blurred_render_update_mask, 'project_update')
+        self.log_train_image(rgb_output * transition_mask, 'project_transition')
+        self.log_train_image(temp_rgb_render * (1-transition_mask-blurred_render_update_mask), 'project_keep')
 
         # Update the max normals
         # z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
@@ -608,44 +608,43 @@ class TEXTure:
 
         nearest_loss_raito = 0.1
         
+        project_update_mask = blurred_render_update_mask.flatten()
+        project_transition_mask = transition_mask.flatten()
+        old_texture_img = self.mesh_model.texture_img.detach().clone()
+
         for i in tqdm(range(200), desc='fitting mesh colors'):
             optimizer.zero_grad()
-            mask = render_update_mask.flatten()
-            def color_loss(mode):
+            def color_loss(mode, project_update_mask, project_transition_mask):
                 outputs = self.mesh_model.render(background=background, mode=mode, render_cache=render_cache)
                 rgb_render = outputs['image']
                 if i % 50 == 0:
                     self.log_part_image(rgb_render, "part_rgb_render")
                     
-                #https://numpy.org/doc/stable/user/basics.indexing.html
-                # masked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)[:, :, mask > 0]
-                # masked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)[:, :, mask > 0]
-            
-                # masked_mask = mask[mask > 0]
-                # loss = ((masked_pred - masked_target.detach()).pow(2) * masked_mask).mean() + (
-                #       (masked_pred - masked_pred.detach()).pow(2) * (1 - masked_mask)).mean()
+                
 
                 unmasked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)
                 unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)
-                unmasked_keep =  temp_rgb_render.reshape(1, temp_rgb_render.shape[1], -1)
-                return ((unmasked_pred - unmasked_target.detach()).pow(2) * mask).sum() # + ((unmasked_pred - unmasked_keep.detach()).pow(2) * (1-mask)).sum()
-            
-                # self.log_part_loss(rgb_render, temp_rgb_render, "part loss")
+                
+                update_loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * project_update_mask).mean()
+                tranistion_loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * project_transition_mask).mean()
+                keep_loss = (self.mesh_model.meta_texture_img -old_texture_img).pow(2).mean()
 
-            loss = color_loss("bilinear") + nearest_loss_raito*color_loss("nearest")
+                return update_loss + 1e-4 * (keep_loss + 0 * tranistion_loss)
+
+            loss = color_loss("bilinear", project_update_mask, project_transition_mask) + nearest_loss_raito*color_loss("nearest", project_update_mask, project_transition_mask)
             
-            def z_normals_loss(mode):
+            def z_normals_loss(mode, project_update_mask):
                 meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                                       use_meta_texture=True, render_cache=render_cache, mode=mode)
                 current_z_normals = meta_outputs['image']
                 current_z_mask = meta_outputs['mask'].flatten()
                 # combined_mask = torch.bitwise_and(current_z_mask, update_mask)
                 masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :1]
-                masked_last_z_normals = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :1]
+                masked_best_z_normal_map = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :1]
 
-                return ((masked_current_z_normals - masked_last_z_normals.detach()).pow(2) *current_z_mask * mask).mean()
+                return ((masked_current_z_normals - masked_best_z_normal_map.detach()).pow(2) * current_z_mask * project_update_mask).mean()
 
-            loss+= z_normals_loss("bilinear") + nearest_loss_raito*z_normals_loss("nearest")
+            loss+= z_normals_loss("bilinear", project_update_mask) + nearest_loss_raito*z_normals_loss("nearest", project_update_mask)
 
             loss.backward()
             optimizer.step()
