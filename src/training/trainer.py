@@ -501,7 +501,7 @@ class TEXTure:
             refine_mask[mask == 0] = 0
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_1')
         
-        kernel = np.ones((2, 2), np.uint8)
+        kernel = np.ones((3, 3), np.uint8)
         refine_n_update_mask = refine_mask.clone()
         refine_n_update_mask[update_mask==1] =1
         refine_n_update_mask = torch.from_numpy(
@@ -513,7 +513,7 @@ class TEXTure:
             mask.device).unsqueeze(0).unsqueeze(0)
 
         # remove small pointed gaps from refine area. Which will help avoid grey patterns painted by inpaint.
-        refine_mask = self.remove_small_gap(refine_mask, np.ones((3, 3), np.uint8))
+        refine_mask = self.remove_small_gap(refine_mask, kernel)
 
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_2')
         update_mask[refine_mask == 1] = 1
@@ -627,7 +627,7 @@ class TEXTure:
                 
                 update_loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * project_update_mask).mean()
                 tranistion_loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * project_transition_mask).mean()
-                keep_loss = (self.mesh_model.meta_texture_img -old_texture_img).pow(2).mean()
+                keep_loss = (self.mesh_model.texture_img -old_texture_img).pow(2).mean()
 
                 return update_loss + 1e-4 * (keep_loss + 0 * tranistion_loss)
 
