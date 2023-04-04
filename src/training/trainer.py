@@ -344,7 +344,7 @@ class TEXTure:
         img_latents, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, impaint_img,
                                                                 cropped_depth_render.detach(),
                                                                 guidance_scale=self.cfg.guide.guidance_scale,
-                                                                strength=0.2, 
+                                                                strength=0.3, 
                                                                 fixed_seed=self.cfg.optim.seed,
                                                                 num_inference_steps = 20,
                                                                 intermediate_vis=self.cfg.log.vis_diffusion_steps,
@@ -629,7 +629,7 @@ class TEXTure:
                 tranistion_loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * project_transition_mask).mean()
                 keep_loss = (self.mesh_model.texture_img -old_texture_img).pow(2).mean()
 
-                return update_loss + 1e-4 * (keep_loss + 0 * tranistion_loss)
+                return update_loss + 1e-4 * (keep_loss + 0.4 * tranistion_loss)
 
             loss = color_loss("bilinear", project_update_mask, project_transition_mask) + nearest_loss_raito*color_loss("nearest", project_update_mask, project_transition_mask)
             
