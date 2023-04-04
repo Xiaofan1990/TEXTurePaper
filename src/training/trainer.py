@@ -469,11 +469,8 @@ class TEXTure:
         generate_mask[exact_generate_mask==1]=1
 
         generate_mask = self.remove_small_gap(generate_mask, np.ones((3, 3), np.uint8))
-
-
-        update_mask = generate_mask.clone()
-
-        object_mask = torch.ones_like(update_mask)
+        
+        object_mask = torch.ones_like(depth_render)
         object_mask[depth_render == 0] = 0
         object_mask = torch.from_numpy(
             cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((7, 7), np.uint8))).to(
@@ -481,7 +478,7 @@ class TEXTure:
 
         # Generate the refine mask based on the z normals, and the edited mask
 
-        refine_mask = torch.zeros_like(update_mask)
+        refine_mask = torch.zeros_like(depth_render)
         refine_mask[z_normals > z_normals_cache[:, :1, :, :] + self.cfg.guide.z_update_thr] = 1
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_0')
         if self.cfg.guide.initial_texture is None:
@@ -502,23 +499,24 @@ class TEXTure:
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_1')
         
         kernel = np.ones((3, 3), np.uint8)
-        refine_n_update_mask = refine_mask.clone()
-        refine_n_update_mask[update_mask==1] =1
-        refine_n_update_mask = torch.from_numpy(
-            cv2.erode(refine_n_update_mask[0, 0].detach().cpu().numpy(), kernel)).to(
+        refine_n_generate_mask = refine_mask.clone()
+        refine_n_generate_mask[generate_mask==1] =1
+        refine_n_generate_mask = torch.from_numpy(
+            cv2.erode(refine_n_generate_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
-        refine_mask[refine_n_update_mask==0] = 0
+        refine_mask[refine_n_generate_mask==0] = 0
         refine_mask = torch.from_numpy(
             cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
 
         # remove small pointed gaps from refine area. Which will help avoid grey patterns painted by inpaint.
         refine_mask = self.remove_small_gap(refine_mask, kernel)
+        refine_mask[object_mask==0] = 0
 
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_2')
-        update_mask[refine_mask == 1] = 1
 
-        update_mask[torch.bitwise_and(object_mask == 0, generate_mask == 0)] = 0
+        update_mask = generate_mask.clone()
+        update_mask[refine_mask == 1] = 1
 
         # Visualize trimap
         if self.cfg.log.log_images:
