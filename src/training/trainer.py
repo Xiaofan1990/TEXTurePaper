@@ -30,9 +30,14 @@ class TEXTure:
         self.cfg = cfg
         
         # otherwise some texture pixels will be hidden when from bad angle
-        # assert(texture_resolution <= train_grid_size * (bad_normal * 0.9) and bilinear) or 
-        # or assert(texture_resolution <= train_grid_size * 2 * (bad_normal * 0.9) and nerest)
+        pixel_ratio = 2
+        if (self.cfg.guide.texture_interpolation_mode == 'nereast'):
+            pixel_ratio = 1
 
+        assert self.cfg.guide.texture_resolution < self.cfg.render.train_grid_size \
+            * pixel_ratio * (0.9 * self.cfg.render.good_z_normal_threshold) \
+            , 'some texture pixels will be hidden when from bad angle'
+        
         self.paint_step = 0
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -46,18 +51,16 @@ class TEXTure:
         self.final_renders_path = make_path(self.exp_path / 'results')
 
         self.init_logger()
-        utils.log_mem_stat()
-
         pyrallis.dump(self.cfg, (self.exp_path / 'config.yaml').open('w'))
 
         self.view_dirs = ['front', 'left', 'back', 'right', 'overhead', 'bottom']
         self.mesh_model = self.init_mesh_model()
-        utils.log_mem_stat()
+        utils.log_mem_stat("init_mesh_model")
         self.diffusion = self.init_diffusion()
-        utils.log_mem_stat()
+        utils.log_mem_stat("init_diffusion")
         self.text_z, self.text_string = self.calc_text_embeddings()
         self.dataloaders = self.init_dataloaders()
-        utils.log_mem_stat()
+        utils.log_mem_stat("init_dataloaders")
         self.back_im = torch.Tensor(np.array(Image.open(self.cfg.guide.background_img).convert('RGB'))).to(
             self.device).permute(2, 0,
                                  1) / 255.0
@@ -66,8 +69,6 @@ class TEXTure:
 
 
         logger.info(f'Successfully initialized {self.cfg.log.exp_name}')
-
-        utils.log_mem_stat()
 
     def init_mesh_model(self) -> nn.Module:
         cache_path = Path('cache') / Path(self.cfg.guide.shape_path).stem
@@ -221,7 +222,6 @@ class TEXTure:
 
     def paint_viewpoint(self, data: Dict[str, Any]):
         logger.info(f'--- Painting step #{self.paint_step} ---')
-        utils.log_mem_stat();
         theta, phi, radius = data['theta'], data['phi'], data['radius']
         # If offset of phi was set from code
         phi = phi - np.deg2rad(self.cfg.render.front_offset)
@@ -593,7 +593,7 @@ class TEXTure:
         transition_mask = 1- blurred_render_update_mask
 
         # TODO ideally we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
-        z_is_too_bad = z_normals<0.51 # should from config
+        z_is_too_bad = z_normals < self.cfg.render.good_z_normal_threshold
         blurred_render_update_mask[z_is_too_bad] = 0
         transition_mask[z_is_too_bad] = 0
 
@@ -617,7 +617,10 @@ class TEXTure:
         project_update_mask = blurred_render_update_mask.flatten()
         project_transition_mask = transition_mask.flatten()
         old_texture_img = self.mesh_model.texture_img.detach().clone()
+        unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)
+        masked_best_z_normal_map = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :1]
 
+        utils.log_mem_stat("before project back")
         for i in tqdm(range(200), desc='fitting mesh colors'):
             optimizer.zero_grad()
             def color_loss(mode, project_update_mask, project_transition_mask):
@@ -625,11 +628,9 @@ class TEXTure:
                 rgb_render = outputs['image']
                 if i % 50 == 0:
                     self.log_part_image(rgb_render, "part_rgb_render")
-                    
+                    utils.log_mem_stat("fitting mesh colors")
                 
-
                 unmasked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)
-                unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)
                 
                 update_loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * project_update_mask).mean()
                 tranistion_loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * project_transition_mask).mean()
@@ -646,8 +647,7 @@ class TEXTure:
                 current_z_mask = meta_outputs['mask'].flatten()
                 # combined_mask = torch.bitwise_and(current_z_mask, update_mask)
                 masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :1]
-                masked_best_z_normal_map = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :1]
-
+                
                 return ((masked_current_z_normals - masked_best_z_normal_map.detach()).pow(2) * current_z_mask * project_update_mask).mean()
 
             loss+= z_normals_loss("bilinear", project_update_mask) + nearest_loss_raito*z_normals_loss("nearest", project_update_mask)

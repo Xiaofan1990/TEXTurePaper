@@ -8,7 +8,7 @@ from loguru import logger
 class RenderConfig:
     """ Parameters for the Mesh Renderer """
     # Grid size for rendering during painting
-    train_grid_size: int = 1200
+    train_grid_size: int = 2400
     # Grid size of evaluation
     eval_grid_size: int = 1024
     # training camera radius range
@@ -29,6 +29,8 @@ class RenderConfig:
     views_after: List[Tuple[float, float]] = field(default_factory=[[180,30],[180,150]].copy)
     # Whether to alternate between the rotating views from the different sides
     alternate_views: bool = True
+    # Don't project back if below this threshold to avoid project back bad rendering
+    good_z_normal_threshold: float = 0.51
 
 @dataclass
 class GuideConfig:

@@ -78,9 +78,9 @@ class StableDiffusion(nn.Module):
                 self.device)
         self.controlnet.enable_xformers_memory_efficient_attention()
 
-        self.upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler", torch_dtype=torch.float16).to(
-            self.device)
-        self.upscaler.enable_xformers_memory_efficient_attention()
+        #self.upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler", torch_dtype=torch.float16).to(
+        #    self.device)
+        #self.upscaler.enable_xformers_memory_efficient_attention()
 
         
         if self.use_inpaint:
@@ -633,12 +633,8 @@ class StableDiffusion(nn.Module):
         return latents
 
     def decode_latents(self, latents):
-        logger.info("latents.dtype "+ str(latents.dtype))
-
         # latents = F.interpolate(latents, (64, 64), mode='bilinear', align_corners=False)
         latents = 1 / 0.18215 * latents
-
-        logger.info("latents.dtype "+ str(latents.dtype))
 
         with torch.no_grad():
             imgs = self.vae.decode(latents).sample

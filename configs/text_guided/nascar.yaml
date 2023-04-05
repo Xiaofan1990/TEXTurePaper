@@ -7,7 +7,6 @@ guide:
   shape_scale: 0.6
   append_direction: False
   shape_path: shapes/nascar.obj
-  texture_resolution: 1024
   guidance_scale: 10
 optim:
   seed: 12316542
