@@ -386,7 +386,7 @@ class TexturedMeshModel(nn.Module):
         if background is not None and type(background) == str:
             background_type = background
             use_render_back = True
-        pred_features, mask, depth, normals, render_cache = self.renderer.render_single_view_texture(augmented_vertices,
+        pred_features, mask, unnormalized_depth, depth, normals, render_cache = self.renderer.render_single_view_texture(augmented_vertices,
                                                                                                      self.mesh.faces,
                                                                                                      self.face_attributes,
                                                                                                      texture_img,
@@ -426,7 +426,7 @@ class TexturedMeshModel(nn.Module):
             pred_features = pred_features.clamp(0, 1)
 
         return {'image': pred_map, 'mask': mask, 'background': pred_back,
-                'foreground': pred_features, 'depth': depth, 'normals': normals, 'render_cache': render_cache,
+                'foreground': pred_features, 'unnormalized_depth': unnormalized_depth, 'depth': depth, 'normals': normals, 'render_cache': render_cache,
                 'texture_map': texture_img}
 
     def draw(self, theta, phi, radius, target_rgb):

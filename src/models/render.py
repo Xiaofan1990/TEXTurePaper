@@ -40,6 +40,7 @@ class Renderer:
         min_val = 0.5
         depth_map[object_mask] = ((1 - min_val) * (depth_map[object_mask] - depth_map[object_mask].min()) / (
                 depth_map[object_mask].max() - depth_map[object_mask].min())) + min_val
+
         # depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
         # depth_map[depth_map == 1] = 0 # Background gets largest value, set to 0
 
@@ -86,8 +87,9 @@ class Renderer:
             face_vertices_camera, face_vertices_image, face_normals = kal.render.mesh.prepare_vertices(
                 verts.to(self.device), faces.to(self.device), self.camera_projection, camera_transform=camera_transform)
 
-            depth_map, _ = kal.render.mesh.rasterize(dims[1], dims[0], face_vertices_camera[:, :, :, -1],
+            unnormalized_depth_map, _ = kal.render.mesh.rasterize(dims[1], dims[0], face_vertices_camera[:, :, :, -1],
                                                               face_vertices_image, face_vertices_camera[:, :, :, -1:])
+            depth_map = unnormalized_depth_map.clone()
             depth_map = self.normalize_depth(depth_map)
 
             uv_features, face_idx = kal.render.mesh.rasterize(dims[1], dims[0], face_vertices_camera[:, :, :, -1],
@@ -96,7 +98,8 @@ class Renderer:
 
         else:
             # logger.info('Using render cache')
-            face_normals, uv_features, face_idx, depth_map = render_cache['face_normals'], render_cache['uv_features'], render_cache['face_idx'], render_cache['depth_map']
+            face_normals, uv_features, face_idx, unnormalized_depth_map, depth_map = \
+                render_cache['face_normals'], render_cache['uv_features'], render_cache['face_idx'], render_cache['unnormalized_depth_map'], render_cache['depth_map']
         mask = (face_idx > -1).float()[..., None]
 
         image_features = kal.render.mesh.texture_mapping(uv_features, texture_map, mode=mode)
@@ -109,10 +112,11 @@ class Renderer:
 
         normals_image = face_normals[0][face_idx, :]
 
-        render_cache = {'uv_features':uv_features, 'face_normals':face_normals,'face_idx':face_idx, 'depth_map':depth_map}
+        render_cache = {'uv_features':uv_features, 'face_normals':face_normals,'face_idx':face_idx\
+            , 'unnormalized_depth_map':unnormalized_depth_map, 'depth_map':depth_map}
 
         return image_features.permute(0, 3, 1, 2), mask.permute(0, 3, 1, 2),\
-               depth_map.permute(0, 3, 1, 2), normals_image.permute(0, 3, 1, 2), render_cache
+               unnormalized_depth_map.permute(0, 3, 1, 2), depth_map.permute(0, 3, 1, 2), normals_image.permute(0, 3, 1, 2), render_cache
 
     def project_uv_single_view(self, verts, faces, uv_face_attr, elev=0, azim=0, radius=2,
                                look_at_height=0.0, dims=None, background_type='none'):

@@ -35,7 +35,7 @@ class TEXTure:
             pixel_ratio = 1
 
         assert self.cfg.guide.texture_resolution < self.cfg.render.train_grid_size \
-            * pixel_ratio * (0.9 * self.cfg.render.good_z_normal_threshold) \
+            * pixel_ratio * (0.9 * self.cfg.render.pixel_ratio_threshold) \
             , 'some texture pixels will be hidden when from bad angle'
         
         self.paint_step = 0
@@ -265,6 +265,10 @@ class TEXTure:
         self.log_train_image(outputs['normals'], "normal_no_clamp")
         self.log_train_image(normals, "normal_clamp")
         self.log_train_image(rgb_render, 'rendered_input')
+
+        temp = outputs["unnormalized_depth"][outputs["unnormalized_depth"]<0]
+        logger.info("depth range "+str(temp.max())+" "+str(temp.min()))
+
         self.log_train_image(depth_render[0, 0], 'depth', colormap=True)
         self.log_train_image(x_normals[0, 0], 'x_normals', colormap=True)
         self.log_train_image(y_normals[0, 0], 'y_normals', colormap=True)
@@ -592,18 +596,25 @@ class TEXTure:
         
         transition_mask = 1- blurred_render_update_mask
 
-        # TODO ideally we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
-        z_is_too_bad = z_normals < self.cfg.render.good_z_normal_threshold
-        blurred_render_update_mask[z_is_too_bad] = 0
-        transition_mask[z_is_too_bad] = 0
 
 
         temp_outputs = self.mesh_model.render(background=background,
                                              render_cache=render_cache)
+        # we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
+        distance_calibration = 0.5
+        pixel_size_at_depth_1 = 1 + distance_calibration
+        z_is_too_bad = (pixel_size_at_depth_1 * z_normals * 1 / (-temp_outputs['unnormalized_depth'] + distance_calibration))< self.cfg.render.pixel_ratio_threshold
+        blurred_render_update_mask[z_is_too_bad] = 0
+        transition_mask[z_is_too_bad] = 0
+
+
         temp_rgb_render = temp_outputs['image']
         self.log_train_image(rgb_output * blurred_render_update_mask, 'project_update')
         self.log_train_image(rgb_output * transition_mask, 'project_transition')
         self.log_train_image(temp_rgb_render * (1-transition_mask-blurred_render_update_mask), 'project_keep')
+        # save memory?
+        temp_outputs = None
+
 
         # Update the max normals
         # z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
