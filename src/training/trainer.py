@@ -14,6 +14,7 @@ from matplotlib import cm
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import math
 
 from src import utils
 from src.configs.train_config import TrainConfig
@@ -27,6 +28,11 @@ class TEXTure:
 
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
+        
+        # otherwise some texture pixels will be hidden when from bad angle
+        # assert(texture_resolution <= train_grid_size * (bad_normal * 0.9) and bilinear) or 
+        # or assert(texture_resolution <= train_grid_size * 2 * (bad_normal * 0.9) and nerest)
+
         self.paint_step = 0
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -430,7 +436,7 @@ class TEXTure:
         return rgb_render, texture_rgb, depth_render, pred_z_normals
 
     # remove small pointed gaps from area. Which will help avoid grey patterns painted by inpaint.        
-    def remove_small_gap(self, mask, kernel):
+    def fill_small_gap(self, mask, kernel):
         mask = torch.from_numpy(
             cv2.dilate(mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
@@ -459,16 +465,20 @@ class TEXTure:
 
 
         ## only expand when smaller than kernal to prevent over expanding generate mask
-        kernel = np.ones((19, 19), np.uint8)
-        generate_mask = self.remove_small_area(exact_generate_mask, kernel)
+        # generate expand kernel size should be render_resolution/unet_latent.shape[-1]
+        # small area kernel size shold at least be render_resolution/vae_input_size, which is 512 ??
+        small_are_kernel_size = math.ceil(self.cfg.render.train_grid_size/512)
+        small_area_kernel = np.ones((small_are_kernel_size, small_are_kernel_size), np.uint8)
+        generate_expand_kernel = np.ones((19, 19), np.uint8)
+        generate_mask = self.remove_small_area(exact_generate_mask, generate_expand_kernel)
         generate_mask = exact_generate_mask - generate_mask
         # Extpand generate mask
         generate_mask = torch.from_numpy(
-            cv2.dilate(generate_mask[0, 0].detach().cpu().numpy(), kernel)).to(
+            cv2.dilate(generate_mask[0, 0].detach().cpu().numpy(), generate_expand_kernel)).to(
             generate_mask.device).unsqueeze(0).unsqueeze(0)
         generate_mask[exact_generate_mask==1]=1
 
-        generate_mask = self.remove_small_gap(generate_mask, np.ones((3, 3), np.uint8))
+        generate_mask = self.fill_small_gap(generate_mask, small_area_kernel)
         
         object_mask = torch.ones_like(depth_render)
         object_mask[depth_render == 0] = 0
@@ -481,8 +491,13 @@ class TEXTure:
         refine_mask = torch.zeros_like(depth_render)
         refine_mask[z_normals > z_normals_cache[:, :1, :, :] + self.cfg.guide.z_update_thr] = 1
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_0')
+        refine_mask[generate_mask==1] = 0;
+
+
+        # Xiaofan: TODO, clean up these logics
         if self.cfg.guide.initial_texture is None:
             logger.info("refine_mask[z_normals_cache[:, :1, :, :] == 0] = 0")
+            # should be exact_generate_mask ?? they should be 1:1 mapping. Unless one of them is inaccurate
             refine_mask[z_normals_cache[:, :1, :, :] == 0] = 0
         elif self.cfg.guide.reference_texture is not None:
             refine_mask[edited_mask == 0] = 0
@@ -498,26 +513,19 @@ class TEXTure:
             refine_mask[mask == 0] = 0
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_1')
         
-        kernel = np.ones((3, 3), np.uint8)
         refine_n_generate_mask = refine_mask.clone()
-        refine_n_generate_mask[generate_mask==1] =1
-        refine_n_generate_mask = torch.from_numpy(
-            cv2.erode(refine_n_generate_mask[0, 0].detach().cpu().numpy(), kernel)).to(
-            mask.device).unsqueeze(0).unsqueeze(0)
-        refine_mask[refine_n_generate_mask==0] = 0
-        refine_mask = torch.from_numpy(
-            cv2.dilate(refine_mask[0, 0].detach().cpu().numpy(), kernel)).to(
-            mask.device).unsqueeze(0).unsqueeze(0)
-
-        # remove small pointed gaps from refine area. Which will help avoid grey patterns painted by inpaint.
-        refine_mask = self.remove_small_gap(refine_mask, kernel)
+        refine_n_generate_mask[generate_mask==1] = 1
+        refine_n_generate_mask = self.remove_small_area(refine_n_generate_mask, small_area_kernel)
+        refine_n_generate_mask = self.fill_small_gap(refine_n_generate_mask, small_area_kernel)
+        
+        refine_mask = refine_n_generate_mask - generate_mask
         refine_mask[object_mask==0] = 0
 
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_2')
 
         update_mask = generate_mask.clone()
         update_mask[refine_mask == 1] = 1
-
+        
         # Visualize trimap
         if self.cfg.log.log_images:
             trimap_vis = utils.color_with_shade(color=[112 / 255.0, 173 / 255.0, 71 / 255.0], z_normals=z_normals)
@@ -535,7 +543,7 @@ class TEXTure:
             if self.paint_step > 1 or self.cfg.guide.initial_texture is not None:
                 refinement_color_shaded = utils.color_with_shade(color=[91 / 255.0, 155 / 255.0, 213 / 255.0],
                                                                  z_normals=z_normals)
-                only_old_mask_for_vis = torch.bitwise_and(refine_mask == 1, generate_mask == 0).float().detach()
+                only_old_mask_for_vis = torch.bitwise_and(update_mask == 1, generate_mask == 0).float().detach()
                 trimap_vis = trimap_vis * 0 + 1.0 * (trimap_vis * (
                         1 - only_old_mask_for_vis) + refinement_color_shaded * only_old_mask_for_vis)
             self.log_train_image(shaded_rgb_vis, 'shaded_input')
@@ -585,7 +593,7 @@ class TEXTure:
         transition_mask = 1- blurred_render_update_mask
 
         # TODO ideally we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
-        z_is_too_bad = z_normals<0.51
+        z_is_too_bad = z_normals<0.51 # should from config
         blurred_render_update_mask[z_is_too_bad] = 0
         transition_mask[z_is_too_bad] = 0
 
