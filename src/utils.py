@@ -108,13 +108,29 @@ def gkern(kernlen=256, std=128):
     gkern2d = torch.outer(gkern1d, gkern1d)
     return gkern2d
 
+# Xiaofan: don't use this. This has issue. 
+# E.g it needs to expand image with padding > kernel size before applying this. Otherwise you'll lose some color on the edge
 def gaussian_blur(image:torch.Tensor, kernel_size:int, std:int) -> torch.Tensor:
+    assert kernel_size % 2 != 0
     gaussian_filter = gkern(kernel_size, std=std)
     gaussian_filter /= gaussian_filter.sum()
 
-    image = F.conv2d(image,
-                                          gaussian_filter.unsqueeze(0).unsqueeze(0).cuda(), padding=kernel_size // 2)
+    image = F.conv2d(image, gaussian_filter.unsqueeze(0).unsqueeze(0).cuda(), padding=kernel_size // 2)
     return image
+
+
+# TODO because kernel is a squre, different direction has different decay rate
+def linear_blur(image:torch.Tensor, padding_size:int) -> torch.Tensor:
+    step = 1.0/padding_size
+    ret = image.clone()
+
+    max_pool = torch.nn.MaxPool2d(kernel_size = (3, 3), padding=1, stride = (1, 1))
+    for _ in range(padding_size):
+        temp = max_pool(ret)
+        temp -= step
+        torch.maximum(ret, temp, out=ret)
+
+    return ret
 
 def color_with_shade(color: List[float],z_normals:torch.Tensor,light_coef=0.7):
     normals_with_light = (light_coef + (1 - light_coef) * z_normals.detach())
@@ -123,6 +139,7 @@ def color_with_shade(color: List[float],z_normals:torch.Tensor,light_coef=0.7):
     return shaded_color
 
 def log_mem_stat(step=''):
+    return
     logger.info('logging mem stat:'+step + '-------------------------------------')
     mem_stats = torch.cuda.memory_stats()
     for key,value in mem_stats.items():

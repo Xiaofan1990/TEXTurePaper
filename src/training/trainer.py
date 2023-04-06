@@ -586,6 +586,15 @@ class TEXTure:
         checker_mask[only_old_mask == 1] = checkerboard[only_old_mask == 1]
         return checker_mask
 
+    def calculate_transition_paddings(self, area):
+        kernel_size = 21 # must be odd value
+        dilated_area = torch.from_numpy(
+            cv2.dilate(area[0, 0].detach().cpu().numpy(), np.ones((kernel_size, kernel_size), np.uint8))).to(
+            area.device).unsqueeze(0).unsqueeze(0)
+        blurred_area = utils.linear_blur(area, kernel_size//2)
+
+        return blurred_area - area, dilated_area - blurred_area         
+
     def project_back(self, render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
                      z_normals_cache: torch.Tensor):
@@ -594,45 +603,31 @@ class TEXTure:
             cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
             object_mask.device).unsqueeze(0).unsqueeze(0)
         render_update_mask = object_mask.clone()
-
         render_update_mask[update_mask == 0] = 0
 
-        blurred_render_update_mask = render_update_mask
-        #blurred_render_update_mask = torch.from_numpy(
-        #    cv2.dilate(render_update_mask[0, 0].detach().cpu().numpy(), np.ones((25, 25), np.uint8))).to(
-        #    render_update_mask.device).unsqueeze(0).unsqueeze(0)
-        #blurred_render_update_mask = utils.gaussian_blur(blurred_render_update_mask, 21, 16)
-
+        transition_update_mask, transition_keep_mask  = self.calculate_transition_paddings(render_update_mask)
         # Do not get out of the object
-        blurred_render_update_mask[object_mask == 0] = 0
-
-        #if self.cfg.guide.strict_projection:
-        #    blurred_render_update_mask[blurred_render_update_mask < 0.5] = 0
-        #    #Xiaofan: why we need this? didn't we already consdierred this in update mask?
-        #    # Do not use bad normals
-        #    z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
-        #    blurred_render_update_mask[z_was_better] = 0
-        
-        # TODO likely we need to crop it into object mask as well. Though it doesn't matter as texture can't affect background. Likely :D
-        transition_mask = 1- blurred_render_update_mask
-
-
+        transition_update_mask[object_mask == 0] = 0
+        transition_keep_mask[object_mask == 0] = 0
 
         temp_outputs = self.mesh_model.render(background=background,
                                              render_cache=render_cache)
+        temp_rgb_render = temp_outputs['image']
         # we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
         distance_calibration = 0.5
         pixel_size_at_depth_1 = 1 + distance_calibration
         z_is_too_bad = (pixel_size_at_depth_1 * z_normals * 1 / (-temp_outputs['unnormalized_depth'] + distance_calibration))< self.cfg.render.pixel_ratio_threshold
-       
-        blurred_render_update_mask[z_is_too_bad] = 0
-        transition_mask[z_is_too_bad] = 0
+        
+        render_update_mask[z_is_too_bad] = 0
+        transition_update_mask[z_is_too_bad] = 0
+        transition_keep_mask[z_is_too_bad] = 0
 
+        self.log_train_image(rgb_output * render_update_mask, 'project_update')
+        self.log_train_image(rgb_output * transition_update_mask, 'project_transition')
+        # transition keep having issue....
 
-        temp_rgb_render = temp_outputs['image']
-        self.log_train_image(rgb_output * blurred_render_update_mask, 'project_update')
-        self.log_train_image(rgb_output * transition_mask, 'project_transition')
-        self.log_train_image(temp_rgb_render * (1-transition_mask-blurred_render_update_mask), 'project_keep')
+        self.log_train_image(temp_rgb_render * transition_keep_mask, 'project_transition_keep')
+        self.log_train_image(temp_rgb_render * (1-transition_update_mask-transition_keep_mask-render_update_mask), 'project_keep')
         # save memory?
         temp_outputs = None
 
@@ -646,16 +641,19 @@ class TEXTure:
 
         nearest_loss_raito = 0.1
         
-        project_update_mask = blurred_render_update_mask.flatten()
-        project_transition_mask = transition_mask.flatten()
+        render_update_mask = render_update_mask.flatten()
+        transition_update_mask = transition_update_mask.flatten()
+        transition_keep_mask = transition_keep_mask.flatten()
+
         old_texture_img = self.mesh_model.texture_img.detach().clone()
-        unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1)
+        unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1).detach()
+        unmasked_keep = temp_rgb_render.reshape(1, temp_rgb_render.shape[1], -1).detach()
         masked_best_z_normal_map = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :1]
 
         utils.log_mem_stat("before project back")
         for i in tqdm(range(200), desc='fitting mesh colors'):
             optimizer.zero_grad()
-            def color_loss(mode, project_update_mask, project_transition_mask, log=False):
+            def color_loss(mode, log=False):
                 outputs = self.mesh_model.render(background=background, mode=mode, render_cache=render_cache)
                 rgb_render = outputs['image']
                 if i % 50 == 0 and log:
@@ -664,15 +662,15 @@ class TEXTure:
                 
                 unmasked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)
                 
-                update_loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * project_update_mask).mean()
-                tranistion_loss = ((unmasked_pred - unmasked_target.detach()).pow(2) * project_transition_mask).mean()
+                update_loss = ((unmasked_pred - unmasked_target).pow(2) * (render_update_mask+transition_update_mask)).mean()
+                tranistion_keep_loss = ((unmasked_pred - unmasked_keep).pow(2) * transition_keep_mask).mean()
                 keep_loss = (self.mesh_model.texture_img -old_texture_img).pow(2).mean()
 
-                return update_loss + 1e-4 * (keep_loss + 0.4 * tranistion_loss)
+                return update_loss + tranistion_keep_loss + 1e-4 * keep_loss
 
-            loss = color_loss("bilinear", project_update_mask, project_transition_mask, True) + nearest_loss_raito*color_loss("nearest", project_update_mask, project_transition_mask)
+            loss = color_loss("bilinear", True) + nearest_loss_raito*color_loss("nearest")
             
-            def z_normals_loss(mode, project_update_mask):
+            def z_normals_loss(mode):
                 meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                                       use_meta_texture=True, render_cache=render_cache, mode=mode)
                 current_z_normals = meta_outputs['image']
@@ -680,9 +678,9 @@ class TEXTure:
                 # combined_mask = torch.bitwise_and(current_z_mask, update_mask)
                 masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :1]
                 
-                return ((masked_current_z_normals - masked_best_z_normal_map.detach()).pow(2) * current_z_mask * project_update_mask).mean()
+                return ((masked_current_z_normals - masked_best_z_normal_map.detach()).pow(2) * current_z_mask * render_update_mask).mean()
 
-            loss+= z_normals_loss("bilinear", project_update_mask) + nearest_loss_raito*z_normals_loss("nearest", project_update_mask)
+            loss+= z_normals_loss("bilinear") + nearest_loss_raito*z_normals_loss("nearest")
 
             loss.backward()
             optimizer.step()
