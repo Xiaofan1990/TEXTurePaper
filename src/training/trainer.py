@@ -252,8 +252,6 @@ class TEXTure:
                                      
 
                                                 
-        x_normals = outputs['normals'][:, -3:, :, :].clamp(0, 1)
-        y_normals = outputs['normals'][:, -2:, :, :].clamp(0, 1)
         z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
         normals = outputs['normals'].clamp(0, 1)
         z_normals_cache = meta_output['image'].clamp(0, 1)
@@ -262,7 +260,6 @@ class TEXTure:
         logger.info("xiaofan z_normals shape:" + str(z_normals.shape))
         logger.info("xiaofan normal shape:" + str(outputs['normals'].shape))
 
-        self.log_train_image(outputs['normals'], "normal_no_clamp")
         self.log_train_image(normals, "normal_clamp")
         self.log_train_image(rgb_render, 'rendered_input')
 
@@ -270,8 +267,6 @@ class TEXTure:
         logger.info("depth range "+str(temp.max())+" "+str(temp.min()))
 
         self.log_train_image(depth_render[0, 0], 'depth', colormap=True)
-        self.log_train_image(x_normals[0, 0], 'x_normals', colormap=True)
-        self.log_train_image(y_normals[0, 0], 'y_normals', colormap=True)
         self.log_train_image(z_normals[0, 0], 'z_normals', colormap=True)
         self.log_train_image(z_normals_cache[0, 0], 'z_normals_cache', colormap=True)
 
@@ -315,8 +310,8 @@ class TEXTure:
         if self.paint_step > 1:
             checker_mask = self.generate_checkerboard(crop(update_mask), crop(refine_mask),
                                                       crop(generate_mask))
-            self.log_train_image(F.interpolate(cropped_rgb_render, (512, 512)) * (1 - checker_mask),
-                                 'checkerboard_input')
+            #self.log_train_image(F.interpolate(cropped_rgb_render, (512, 512)) * (1 - checker_mask),
+            #                     'checkerboard_input')
         self.diffusion.use_inpaint = self.cfg.guide.use_inpainting and self.paint_step > 1
         inputs = cropped_rgb_render.detach()
         if self.paint_step == 1:
@@ -350,7 +345,8 @@ class TEXTure:
             self.log_train_image(cropped_rgb_output, name='img2img_out')
 
         # mine img2img Xiaofan: if not using impaint, pleasde remove update mask as well.
-        self.diffusion.use_inpaint = True
+
+        self.diffusion.use_inpaint = False
         img_latents, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, impaint_img,
                                                                 cropped_depth_render.detach(),
                                                                 guidance_scale=self.cfg.guide.guidance_scale,
@@ -361,13 +357,31 @@ class TEXTure:
                                                                 return_latent = True,
                                                                 use_control_net = True,
                                                                 random_init_latent = False,
-                                                                update_mask = cropped_update_mask,
+                                                                update_mask = None,
                                                                 )
         cropped_rgb_output = self.diffusion.decode_latents(img_latents)
-        self.log_train_image(cropped_rgb_output, name='refine_output')
-        logger.info("cropped_rgb_output.shape "+str(cropped_rgb_output.shape))
+        self.log_train_image(cropped_rgb_output, name='refine_output_without_inpaint')
+        self.log_diffusion_steps(steps_vis, "refine_without_inpaint")
+
+
+        #self.diffusion.use_inpaint = True
+        #img_latents, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, impaint_img,
+        #                                                        cropped_depth_render.detach(),
+        #                                                        guidance_scale=self.cfg.guide.guidance_scale,
+        #                                                        strength=0.3, 
+        #                                                        fixed_seed=self.cfg.optim.seed,
+        #                                                        num_inference_steps = 20,
+        #                                                        intermediate_vis=self.cfg.log.vis_diffusion_steps,
+        #                                                        return_latent = True,
+        #                                                        use_control_net = True,
+        #                                                        random_init_latent = False,
+        #                                                        update_mask = cropped_update_mask,
+        #                                                        )
+        #cropped_rgb_output = self.diffusion.decode_latents(img_latents)
+        #self.log_train_image(cropped_rgb_output, name='refine_output')
+        #logger.info("cropped_rgb_output.shape "+str(cropped_rgb_output.shape))
         
-        self.log_diffusion_steps(steps_vis, "refine")
+        #self.log_diffusion_steps(steps_vis, "refine")
 
         
 
@@ -462,17 +476,25 @@ class TEXTure:
                          depth_render: torch.Tensor,
                          z_normals: torch.Tensor, z_normals_cache: torch.Tensor, edited_mask: torch.Tensor,
                          mask: torch.Tensor):
+        object_mask = torch.ones_like(depth_render)
+        object_mask[depth_render == 0] = 0
+        # erode object mask to avoid background color leakaging into our texture. This mostly only happen when init latent is not randomized.
+        object_mask = torch.from_numpy(
+            cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((7, 7), np.uint8))).to(
+            object_mask.device).unsqueeze(0).unsqueeze(0)
+        #TODO this is not robust at all
         diff = (rgb_render_raw.detach() - torch.tensor(self.mesh_model.default_color).view(1, 3, 1, 1).to(
             self.device)).abs().sum(axis=1)
-        # xiaofan why to float()?
         exact_generate_mask = (diff < 0.1).float().unsqueeze(0)
 
 
-        ## only expand when smaller than kernal to prevent over expanding generate mask
-        # generate expand kernel size should be render_resolution/unet_latent.shape[-1]
+
+        
         # small area kernel size shold at least be render_resolution/vae_input_size, which is 512 ??
         small_are_kernel_size = math.ceil(self.cfg.render.train_grid_size/512)
         small_area_kernel = np.ones((small_are_kernel_size, small_are_kernel_size), np.uint8)
+        ## only expand when smaller than kernal to prevent over expanding generate mask
+        # generate expand kernel size should be render_resolution/unet_latent.shape[-1]
         generate_expand_kernel = np.ones((19, 19), np.uint8)
         generate_mask = self.remove_small_area(exact_generate_mask, generate_expand_kernel)
         generate_mask = exact_generate_mask - generate_mask
@@ -483,12 +505,8 @@ class TEXTure:
         generate_mask[exact_generate_mask==1]=1
 
         generate_mask = self.fill_small_gap(generate_mask, small_area_kernel)
-        
-        object_mask = torch.ones_like(depth_render)
-        object_mask[depth_render == 0] = 0
-        object_mask = torch.from_numpy(
-            cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((7, 7), np.uint8))).to(
-            object_mask.device).unsqueeze(0).unsqueeze(0)
+        generate_mask[object_mask ==0] = 0
+
 
         # Generate the refine mask based on the z normals, and the edited mask
 
@@ -521,7 +539,7 @@ class TEXTure:
         refine_n_generate_mask[generate_mask==1] = 1
         refine_n_generate_mask = self.remove_small_area(refine_n_generate_mask, small_area_kernel)
         refine_n_generate_mask = self.fill_small_gap(refine_n_generate_mask, small_area_kernel)
-        
+
         refine_mask = refine_n_generate_mask - generate_mask
         refine_mask[object_mask==0] = 0
 
@@ -529,6 +547,7 @@ class TEXTure:
 
         update_mask = generate_mask.clone()
         update_mask[refine_mask == 1] = 1
+        update_mask[(1-object_mask)==1] = 1
         
         # Visualize trimap
         if self.cfg.log.log_images:
@@ -550,7 +569,6 @@ class TEXTure:
                 only_old_mask_for_vis = torch.bitwise_and(update_mask == 1, generate_mask == 0).float().detach()
                 trimap_vis = trimap_vis * 0 + 1.0 * (trimap_vis * (
                         1 - only_old_mask_for_vis) + refinement_color_shaded * only_old_mask_for_vis)
-            self.log_train_image(shaded_rgb_vis, 'shaded_input')
             self.log_train_image(trimap_vis, 'trimap')
 
         return update_mask, generate_mask, refine_mask
@@ -571,6 +589,7 @@ class TEXTure:
     def project_back(self, render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
                      z_normals_cache: torch.Tensor):
+        # TODO this object mask is not consistent with the one used calculate trimap, does it matter?
         object_mask = torch.from_numpy(
             cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
             object_mask.device).unsqueeze(0).unsqueeze(0)
@@ -594,6 +613,7 @@ class TEXTure:
         #    z_was_better = z_normals + self.cfg.guide.z_update_thr < z_normals_cache[:, :1, :, :]
         #    blurred_render_update_mask[z_was_better] = 0
         
+        # TODO likely we need to crop it into object mask as well. Though it doesn't matter as texture can't affect background. Likely :D
         transition_mask = 1- blurred_render_update_mask
 
 
@@ -604,6 +624,7 @@ class TEXTure:
         distance_calibration = 0.5
         pixel_size_at_depth_1 = 1 + distance_calibration
         z_is_too_bad = (pixel_size_at_depth_1 * z_normals * 1 / (-temp_outputs['unnormalized_depth'] + distance_calibration))< self.cfg.render.pixel_ratio_threshold
+       
         blurred_render_update_mask[z_is_too_bad] = 0
         transition_mask[z_is_too_bad] = 0
 
@@ -634,10 +655,10 @@ class TEXTure:
         utils.log_mem_stat("before project back")
         for i in tqdm(range(200), desc='fitting mesh colors'):
             optimizer.zero_grad()
-            def color_loss(mode, project_update_mask, project_transition_mask):
+            def color_loss(mode, project_update_mask, project_transition_mask, log=False):
                 outputs = self.mesh_model.render(background=background, mode=mode, render_cache=render_cache)
                 rgb_render = outputs['image']
-                if i % 50 == 0:
+                if i % 50 == 0 and log:
                     self.log_part_image(rgb_render, "part_rgb_render")
                     utils.log_mem_stat("fitting mesh colors")
                 
@@ -649,7 +670,7 @@ class TEXTure:
 
                 return update_loss + 1e-4 * (keep_loss + 0.4 * tranistion_loss)
 
-            loss = color_loss("bilinear", project_update_mask, project_transition_mask) + nearest_loss_raito*color_loss("nearest", project_update_mask, project_transition_mask)
+            loss = color_loss("bilinear", project_update_mask, project_transition_mask, True) + nearest_loss_raito*color_loss("nearest", project_update_mask, project_transition_mask)
             
             def z_normals_loss(mode, project_update_mask):
                 meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
