@@ -6,6 +6,7 @@ from transformers import CLIPTextModel, CLIPTokenizer, logging
 # suppress partial model loading warning
 from src import utils
 from src.utils import seed_everything
+from src.models.upscale.upscaler import Upscaler
 
 logging.set_verbosity_error()
 import torch
@@ -78,10 +79,7 @@ class StableDiffusion(nn.Module):
                 self.device)
         self.controlnet.enable_xformers_memory_efficient_attention()
 
-        #self.upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler", torch_dtype=torch.float16).to(
-        #    self.device)
-        #self.upscaler.enable_xformers_memory_efficient_attention()
-
+        self.upscaler = Upscaler()
         
         if self.use_inpaint:
             # self.inpaint_unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-inpainting",
@@ -362,7 +360,7 @@ class StableDiffusion(nn.Module):
 
     def img2img_step_with_controlnet(self, text_embeddings, inputs, depth_mask, guidance_scale=100, strength=0.5,
                      num_inference_steps=20, update_mask=None, refine_mask=None, check_mask=None,
-                     fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False, return_latent = False, use_control_net = True, random_init_latent = TRUE):
+                     fixed_seed=None, check_mask_iters=0.5, intermediate_vis=False, return_latent = False, use_control_net = True, random_init_latent = True):
         # input is 1 3 512 512
         # depth_mask is 1 1 512 512
         # text_embeddings is 2 512

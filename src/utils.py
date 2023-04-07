@@ -138,6 +138,18 @@ def color_with_shade(color: List[float],z_normals:torch.Tensor,light_coef=0.7):
         z_normals.device) * normals_with_light
     return shaded_color
 
+def tensor2img_affecting_input(tensor):
+    tensor = tensor.permute((0,2,3,1)).squeeze(0).detach().cpu().numpy()
+    image = (tensor * 255).astype(np.uint8)
+    return image
+
+def image2tensor_affecting_input(image):
+    image = image.astype(np.float32) / 255.0
+    image = image.transpose(2, 0, 1)
+    image = torch.from_numpy(image)
+    image = image.unsqueeze(0)
+    return image
+
 def log_mem_stat(step=''):
     return
     logger.info('logging mem stat:'+step + '-------------------------------------')

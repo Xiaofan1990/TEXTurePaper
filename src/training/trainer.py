@@ -363,44 +363,11 @@ class TEXTure:
         self.log_train_image(cropped_rgb_output, name='refine_output_without_inpaint')
         self.log_diffusion_steps(steps_vis, "refine_without_inpaint")
 
-
-        #self.diffusion.use_inpaint = True
-        #img_latents, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, impaint_img,
-        #                                                        cropped_depth_render.detach(),
-        #                                                        guidance_scale=self.cfg.guide.guidance_scale,
-        #                                                        strength=0.3, 
-        #                                                        fixed_seed=self.cfg.optim.seed,
-        #                                                        num_inference_steps = 20,
-        #                                                        intermediate_vis=self.cfg.log.vis_diffusion_steps,
-        #                                                        return_latent = True,
-        #                                                        use_control_net = True,
-        #                                                        random_init_latent = False,
-        #                                                        update_mask = cropped_update_mask,
-        #                                                        )
-        #cropped_rgb_output = self.diffusion.decode_latents(img_latents)
-        #self.log_train_image(cropped_rgb_output, name='refine_output')
-        #logger.info("cropped_rgb_output.shape "+str(cropped_rgb_output.shape))
-        
-        #self.log_diffusion_steps(steps_vis, "refine")
-
-        
-
-        #cropped_rgb_output = self.diffusion.upscaler(
-        #     prompt = text_string,
-        #     negative_prompt = self.cfg.guide.negative_prompt,
-        #     image=img_latents,
-        #     num_inference_steps=20,
-        #     guidance_scale=7.5,
-        #     generator = generator,
-        #     output_type = "not pil :d"
-        #).images[0]
-        #cropped_rgb_output = torch.from_numpy(cropped_rgb_output)
-        #cropped_rgb_output = torch.reshape(cropped_rgb_output, (1, cropped_rgb_output.shape[0], cropped_rgb_output.shape[1], -1))
-        #cropped_rgb_output = cropped_rgb_output.permute((0, 3, 1, 2))
-        #cropped_rgb_output = cropped_rgb_output.to(device=self.device)
+        cropped_rgb_output = self.diffusion.upscaler.do_upscale(utils.tensor2img_affecting_input(cropped_rgb_output))
+        cropped_rgb_output = utils.image2tensor_affecting_input(cropped_rgb_output).to(self.device)
 
 
-        logger.info("cropped_rgb_output.shape after upscale"+str(cropped_rgb_output.shape))
+        logger.info("cropped_rgb_output.shape after upscale "+str(cropped_rgb_output.shape))
         self.log_train_image(cropped_rgb_output, name='scaled_output')
 
         cropped_rgb_output = F.interpolate(cropped_rgb_output,
