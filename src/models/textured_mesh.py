@@ -356,7 +356,7 @@ class TexturedMeshModel(nn.Module):
             fp.write(f'Ns 0.000000 \n')
             fp.write(f'map_Kd {name}albedo.png \n')
 
-    def render(self, theta=None, phi=None, radius=None, background=None,
+    def render(self, theta=None, phi=None, elev_adjustment = 0, azim_adjustment=0, fovyangle = np.pi/3, radius=None, background=None,
                use_meta_texture=False, render_cache=None, use_median=False, dims=None, mode=None ):
         if render_cache is None:
             assert theta is not None and phi is not None and radius is not None
@@ -386,19 +386,23 @@ class TexturedMeshModel(nn.Module):
         if background is not None and type(background) == str:
             background_type = background
             use_render_back = True
-        pred_features, mask, unnormalized_depth, depth, normals, render_cache = self.renderer.render_single_view_texture(augmented_vertices,
-                                                                                                     self.mesh.faces,
-                                                                                                     self.face_attributes,
-                                                                                                     texture_img,
-                                                                                                     elev=theta,
-                                                                                                     azim=phi,
-                                                                                                     radius=radius,
-                                                                                                     look_at_height=self.dy,
-                                                                                                     render_cache=render_cache,
-                                                                                                     dims=dims,
-                                                                                                     background_type=background_type,
-                                                                                                     mode = mode,
-                                                                                                     )
+        pred_features, mask, unnormalized_depth, depth, normals, render_cache \
+            = self.renderer.render_single_view_texture(augmented_vertices,
+            self.mesh.faces,
+            self.face_attributes,
+            texture_img,
+            elev_adjustment = elev_adjustment, 
+            azim_adjustment=azim_adjustment,
+            elev=theta,
+            azim=phi,
+            fovyangle = fovyangle,
+            radius=radius,
+            look_at_height=self.dy,
+            render_cache=render_cache,
+            dims=dims,
+            background_type=background_type,
+            mode = mode,
+            )
 
         mask = mask.detach()
 
@@ -409,8 +413,11 @@ class TexturedMeshModel(nn.Module):
             if background is None:
                 pred_back, _, _ = self.renderer.render_single_view(self.env_sphere,
                                                                    background_sphere_colors,
+                                                                   elev_adjustment = elev_adjustment, 
+                                                                   azim_adjustment = azim_adjustment,
                                                                    elev=theta,
                                                                    azim=phi,
+                                                                   fovyangle = fovyangle,
                                                                    radius=radius,
                                                                    dims=dims,
                                                                    look_at_height=self.dy, calc_depth=False)

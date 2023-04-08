@@ -5,6 +5,7 @@ from typing import List
 
 import numpy as np
 import torch
+import math
 import torchvision.transforms as T
 from PIL import Image
 import einops
@@ -81,16 +82,17 @@ def get_nonzero_region(mask:torch.Tensor):
     min_h, max_h = nz_indices[:, 0].min(), nz_indices[:, 0].max()
     min_w, max_w = nz_indices[:, 1].min(), nz_indices[:, 1].max()
 
+    center_h = (max_h + min_h)/2
+    center_w = (max_w + min_w)/2
     # Calculate the size of the square region
-    size = max(max_h - min_h + 1, max_w - min_w + 1) * 1.1
-    # Calculate the upper left corner of the square region
-    h_start = min(min_h, max_h) - (size - (max_h - min_h + 1)) / 2
-    w_start = min(min_w, max_w) - (size - (max_w - min_w + 1)) / 2
+    half_size = max((max_h - min_h + 1)/ 2, (max_w - min_w + 1)/2) * 1.1
+    half_size = min(half_size, min(center_h, mask.shape[-1]-center_h)-1 )
+    half_size = min(half_size, min(center_w, mask.shape[-1]-center_w)-1 )
 
-    min_h = int(h_start)
-    min_w = int(w_start)
-    max_h = int(min_h + size)
-    max_w = int(min_w + size)
+    min_h = int(torch.round(center_h - half_size))
+    min_w = int(torch.round(center_w - half_size))
+    max_h = int(torch.round(center_h + half_size))
+    max_w = int(torch.round(center_w + half_size))
 
     return min_h, min_w, max_h, max_w
 
@@ -149,6 +151,9 @@ def image2tensor_affecting_input(image):
     image = torch.from_numpy(image)
     image = image.unsqueeze(0)
     return image
+
+def y2angle(y, camare_a, max_y):
+    return math.atan((y-max_y/2)/(max_y/2) * math.tan(camare_a))
 
 def log_mem_stat(step=''):
     return

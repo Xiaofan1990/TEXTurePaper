@@ -220,9 +220,41 @@ class TEXTure:
 
             logger.info(f"\tDone!")
 
+
+
+
+    def adjust_camera(self, data: Dict[str, Any]):
+        theta, phi, radius = data['theta'], data['phi'], data['radius']
+        fovyangle = np.pi/3
+        # If offset of phi was set from code
+        phi = phi - np.deg2rad(self.cfg.render.front_offset)
+        phi = float(phi + 2 * np.pi if phi < 0 else phi)
+
+        # Render from viewpoint
+        outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, fovyangle = fovyangle)
+        min_h, min_w, max_h, max_w = utils.get_nonzero_region(outputs['mask'][0, 0])
+
+        # TODO this should be same as 1/2 camera angle
+        a = fovyangle / 2
+        size = self.cfg.render.train_grid_size
+
+        min_h_a  = utils.y2angle(min_h, a, size)
+        max_h_a  = utils.y2angle(max_h, a, size)
+        min_w_a  = utils.y2angle(min_w, a, size)
+        max_w_a  = utils.y2angle(max_w, a, size)
+
+        h_center = (min_h_a + max_h_a) / 2
+        v_center = (min_w_a + max_w_a) / 2
+        data['theta_adjustment'] = h_center
+        data['phi_adjustment'] = -v_center
+        data['fovyangle'] = max(math.fabs(max_h_a - min_h_a), math.fabs(max_w_a - min_w_a))
+
     def paint_viewpoint(self, data: Dict[str, Any]):
         logger.info(f'--- Painting step #{self.paint_step} ---')
-        theta, phi, radius = data['theta'], data['phi'], data['radius']
+        self.adjust_camera(data)
+
+        theta, phi, radius, theta_adjustment, phi_adjustment, fovyangle \
+            = data['theta'], data['phi'], data['radius'], data['theta_adjustment'], data['phi_adjustment'], data['fovyangle']
         # If offset of phi was set from code
         phi = phi - np.deg2rad(self.cfg.render.front_offset)
         phi = float(phi + 2 * np.pi if phi < 0 else phi)
@@ -237,7 +269,7 @@ class TEXTure:
                                        mode='bilinear', align_corners=False)
 
         # Render from viewpoint
-        outputs = self.mesh_model.render(theta=theta, phi=phi, radius=radius, background=background)
+        outputs = self.mesh_model.render(theta=theta, phi=phi, elev_adjustment=theta_adjustment, azim_adjustment=phi_adjustment, fovyangle = fovyangle, radius=radius, background=background)
         render_cache = outputs['render_cache']
         rgb_render_raw = outputs['image']  # Render where missing values have special color
         depth_render = outputs['depth']
@@ -248,10 +280,7 @@ class TEXTure:
         # Render meta texture map
         meta_output = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                              use_meta_texture=True, render_cache=render_cache)
-
-                                     
-
-                                                
+        
         z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
         normals = outputs['normals'].clamp(0, 1)
         z_normals_cache = meta_output['image'].clamp(0, 1)
@@ -297,32 +326,18 @@ class TEXTure:
         self.log_train_image(rgb_render * (1 - update_mask), name='masked_input')
         self.log_train_image(rgb_render * refine_mask, name='refine_regions')
         utils.log_mem_stat('after log traing image');
-        # Crop to inner region based on object mask
-        min_h, min_w, max_h, max_w = utils.get_nonzero_region(outputs['mask'][0, 0])
-        crop = lambda x: x[:, :, min_h:max_h, min_w:max_w]
-        cropped_rgb_render = crop(rgb_render)
-        cropped_depth_render = crop(depth_render)
-        cropped_update_mask = crop(update_mask)
-        self.log_train_image(cropped_rgb_render, name='cropped_input')
-        checker_mask = None
 
         #inpaint
-        if self.paint_step > 1:
-            checker_mask = self.generate_checkerboard(crop(update_mask), crop(refine_mask),
-                                                      crop(generate_mask))
-            #self.log_train_image(F.interpolate(cropped_rgb_render, (512, 512)) * (1 - checker_mask),
-            #                     'checkerboard_input')
         self.diffusion.use_inpaint = self.cfg.guide.use_inpainting and self.paint_step > 1
-        inputs = cropped_rgb_render.detach()
+        inputs = rgb_render.detach()
         if self.paint_step == 1:
             inputs = None
         impaint_img, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, inputs,
-                                                                    cropped_depth_render.detach(),
+                                                                    depth_render.detach(),
                                                                     guidance_scale=self.cfg.guide.guidance_scale,
-                                                                    strength=1.0, update_mask=cropped_update_mask,
+                                                                    strength=1.0, update_mask=update_mask,
                                                                     refine_mask = refine_mask,
                                                                     fixed_seed=self.cfg.optim.seed,
-                                                                    check_mask=checker_mask,
                                                                     num_inference_steps = 20,
                                                                     random_init_latent = True,
                                                                     intermediate_vis=self.cfg.log.vis_diffusion_steps)
@@ -348,7 +363,7 @@ class TEXTure:
 
         self.diffusion.use_inpaint = False
         img_latents, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, impaint_img,
-                                                                cropped_depth_render.detach(),
+                                                                depth_render.detach(),
                                                                 guidance_scale=self.cfg.guide.guidance_scale,
                                                                 strength=0.3, 
                                                                 fixed_seed=self.cfg.optim.seed,
@@ -370,13 +385,11 @@ class TEXTure:
         logger.info("cropped_rgb_output.shape after upscale "+str(cropped_rgb_output.shape))
         self.log_train_image(cropped_rgb_output, name='scaled_output')
 
-        cropped_rgb_output = F.interpolate(cropped_rgb_output,
-                                           (cropped_rgb_render.shape[2], cropped_rgb_render.shape[3]),
-                                           mode='bilinear', align_corners=False)
-
         # Extend rgb_output to full image size
-        rgb_output = rgb_render.clone()
-        rgb_output[:, :, min_h:max_h, min_w:max_w] = cropped_rgb_output
+        cropped_rgb_output = F.interpolate(cropped_rgb_output,
+                                           (rgb_render.shape[2], rgb_render.shape[3]),
+                                           mode='bilinear', align_corners=False)
+        rgb_output = cropped_rgb_output
         self.log_train_image(rgb_output, name='full_output')
 
         # Project back
