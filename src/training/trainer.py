@@ -258,7 +258,7 @@ class TEXTure:
         # If offset of phi was set from code
         phi = phi - np.deg2rad(self.cfg.render.front_offset)
         phi = float(phi + 2 * np.pi if phi < 0 else phi)
-        logger.info(f'Painting from theta: {theta}, phi: {phi}, radius: {radius}')
+        logger.info(f'Painting from theta: {theta}, phi: {phi}, radius: {radius}, fovyangle: {fovyangle}')
 
         # Set background image
         if self.cfg.guide.use_background_color:
@@ -283,8 +283,9 @@ class TEXTure:
         
         z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
         normals = outputs['normals'].clamp(0, 1)
-        z_normals_cache = meta_output['image'].clamp(0, 1)
+        size_map_cache = meta_output['image'].clamp(0, 1)
         edited_mask = meta_output['image'].clamp(0, 1)[:, 1:2]
+        size_map = self.calculate_size_map(z_normals, outputs["unnormalized_depth"], fovyangle)
 
         logger.info("xiaofan z_normals shape:" + str(z_normals.shape))
         logger.info("xiaofan normal shape:" + str(outputs['normals'].shape))
@@ -297,7 +298,7 @@ class TEXTure:
 
         self.log_train_image(depth_render[0, 0], 'depth', colormap=True)
         self.log_train_image(z_normals[0, 0], 'z_normals', colormap=True)
-        self.log_train_image(z_normals_cache[0, 0], 'z_normals_cache', colormap=True)
+        self.log_train_image(size_map_cache[0, 0], 'size_map_cache', colormap=True)
 
 
         # text embeddings
@@ -313,7 +314,8 @@ class TEXTure:
         update_mask, generate_mask, refine_mask = self.calculate_trimap(rgb_render_raw=rgb_render_raw,
                                                                         depth_render=depth_render,
                                                                         z_normals=z_normals,
-                                                                        z_normals_cache=z_normals_cache,
+                                                                        size_map = size_map,
+                                                                        size_map_cache=size_map_cache,
                                                                         edited_mask=edited_mask,
                                                                         mask=outputs['mask'])
 
@@ -394,11 +396,11 @@ class TEXTure:
 
         # Project back
         object_mask = outputs['mask']
-        fitted_pred_rgb, current_z_normal_fitted = self.project_back(render_cache=render_cache, background=background, rgb_output=rgb_output,
+        fitted_pred_rgb, current_size_map_fitted = self.project_back(render_cache=render_cache, background=background, rgb_output=rgb_output,
                                                object_mask=object_mask, update_mask=update_mask, z_normals=z_normals,
-                                               z_normals_cache=z_normals_cache)
+                                               size_map = size_map, size_map_cache=size_map_cache)
         self.log_train_image(fitted_pred_rgb, name='fitted')
-        self.log_train_image(current_z_normal_fitted[0, 0], 'current_z_normal_fitted', colormap=True)
+        self.log_train_image(current_size_map_fitted[0, 0], 'current_z_normal_fitted', colormap=True)
 
         return
 
@@ -453,8 +455,8 @@ class TEXTure:
         return mask
 
     def calculate_trimap(self, rgb_render_raw: torch.Tensor,
-                         depth_render: torch.Tensor,
-                         z_normals: torch.Tensor, z_normals_cache: torch.Tensor, edited_mask: torch.Tensor,
+                         depth_render: torch.Tensor, z_normals: torch.Tensor,
+                         size_map: torch.Tensor, size_map_cache: torch.Tensor, edited_mask: torch.Tensor,
                          mask: torch.Tensor):
         object_mask = torch.ones_like(depth_render)
         object_mask[depth_render == 0] = 0
@@ -489,9 +491,10 @@ class TEXTure:
 
 
         # Generate the refine mask based on the z normals, and the edited mask
-
         refine_mask = torch.zeros_like(depth_render)
-        refine_mask[z_normals > z_normals_cache[:, :1, :, :] + self.cfg.guide.z_update_thr] = 1
+        # TODO make this a config
+        refine_mask[size_map > size_map[:, :1, :, :] * 1.3] = 1
+        # refine_mask[z_normals > z_normals_cache[:, :1, :, :] + self.cfg.guide.z_update_thr] = 1
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_0')
         refine_mask[generate_mask==1] = 0;
 
@@ -500,7 +503,7 @@ class TEXTure:
         if self.cfg.guide.initial_texture is None:
             logger.info("refine_mask[z_normals_cache[:, :1, :, :] == 0] = 0")
             # should be exact_generate_mask ?? they should be 1:1 mapping. Unless one of them is inaccurate
-            refine_mask[z_normals_cache[:, :1, :, :] == 0] = 0
+            refine_mask[size_map_cache[:, :1, :, :] == 0] = 0
         elif self.cfg.guide.reference_texture is not None:
             refine_mask[edited_mask == 0] = 0
             refine_mask = torch.from_numpy(
@@ -508,7 +511,7 @@ class TEXTure:
                 mask.device).unsqueeze(0).unsqueeze(0)
             refine_mask[mask == 0] = 0
             # Don't use bad angles here
-            refine_mask[z_normals < 0.4] = 0
+            refine_mask[size_map < 0.4] = 0
             logger.info("Don't use bad angles here!!!!!!")
         else:
             # Update all regions inside the object
@@ -575,9 +578,17 @@ class TEXTure:
 
         return blurred_area - area, dilated_area - blurred_area         
 
+    # calculate texture pixel size when map to rendering plane
+    def calculate_size_map(self, z_normals, unnormalized_depth, fovyangle):
+        # depth when texture pixel size is 1 in rendering plane with z_normal = 1 and fovyangle = pi/2
+        # TODO calibrate this
+        pixel_size_1_depth = 0.5
+        return z_normals * (pixel_size_1_depth / -unnormalized_depth) * ( 1 / math.tan(fovyangle/2))
+
     def project_back(self, render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
-                     z_normals_cache: torch.Tensor):
+                     size_map: torch.Tensor,
+                     size_map_cache: torch.Tensor):
         # TODO this object mask is not consistent with the one used calculate trimap, does it matter?
         object_mask = torch.from_numpy(
             cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
@@ -593,30 +604,25 @@ class TEXTure:
         temp_outputs = self.mesh_model.render(background=background,
                                              render_cache=render_cache)
         temp_rgb_render = temp_outputs['image']
-        # we should not only consider z_normal, but also distance? But if we consider distance, some point will never be painted. As it may be far from one angle but not visible from another angle even if close. 
-        distance_calibration = 0.5
-        pixel_size_at_depth_1 = 1 + distance_calibration
-        z_is_too_bad = (pixel_size_at_depth_1 * z_normals * 1 / (-temp_outputs['unnormalized_depth'] + distance_calibration))< self.cfg.render.pixel_ratio_threshold
         
-        render_update_mask[z_is_too_bad] = 0
-        transition_update_mask[z_is_too_bad] = 0
-        transition_keep_mask[z_is_too_bad] = 0
+        logger.info("z_normals range "+str(z_normals.min())+" "+ str(z_normals.max()))
+        size_too_bad = size_map < self.cfg.render.pixel_ratio_threshold
+        
+        render_update_mask[size_too_bad] = 0
+        transition_update_mask[size_too_bad] = 0
+        transition_keep_mask[size_too_bad] = 0
+
+        # TODO size_map_cache shape currently is (1, 3, h, w). But actually we only need (1, 1, h, w)
+        size_map_cache[:, 0, :, :] = size_map_cache[:, 0, :, :] * (1-render_update_mask)+ render_update_mask * size_map[:, 0, :, :]
 
         self.log_train_image(rgb_output * render_update_mask, 'project_update')
         self.log_train_image(rgb_output * transition_update_mask, 'project_transition')
         # transition keep having issue....
 
+        self.log_train_image(temp_rgb_render * size_too_bad, 'size_too_bad')
         self.log_train_image(temp_rgb_render * transition_keep_mask, 'project_transition_keep')
         self.log_train_image(temp_rgb_render * (1-transition_update_mask-transition_keep_mask-render_update_mask), 'project_keep')
-        # save memory?
-        temp_outputs = None
-
-
-        # Update the max normals
-        # z_normals_cache[:, 0, :, :] = torch.max(z_normals_cache[:, 0, :, :], z_normals[:, 0, :, :])
-        z_normals_cache[:, 0, :, :] = z_normals_cache[:, 0, :, :] * (1-update_mask)+ update_mask * z_normals[:, 0, :, :]
-
-
+        
         optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
 
         nearest_loss_raito = 0.1
@@ -628,7 +634,7 @@ class TEXTure:
         old_texture_img = self.mesh_model.texture_img.detach().clone()
         unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1).detach()
         unmasked_keep = temp_rgb_render.reshape(1, temp_rgb_render.shape[1], -1).detach()
-        masked_best_z_normal_map = z_normals_cache.reshape(1, z_normals_cache.shape[1], -1)[:, :1]
+        size_map_target = size_map_cache.reshape(1, size_map_cache.shape[1], -1)[:, :1]
 
         utils.log_mem_stat("before project back")
         for i in tqdm(range(200), desc='fitting mesh colors'):
@@ -650,43 +656,44 @@ class TEXTure:
 
             loss = color_loss("bilinear", True) + nearest_loss_raito*color_loss("nearest")
             
-            def z_normals_loss(mode):
+            def size_map_loss(mode):
                 meta_outputs = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                                       use_meta_texture=True, render_cache=render_cache, mode=mode)
-                current_z_normals = meta_outputs['image']
-                current_z_mask = meta_outputs['mask'].flatten()
-                # combined_mask = torch.bitwise_and(current_z_mask, update_mask)
-                masked_current_z_normals = current_z_normals.reshape(1, current_z_normals.shape[1], -1)[:, :1]
+                size_map_pred = meta_outputs['image']
+                real_size_map_pred = size_map_pred.reshape(1, size_map_pred.shape[1], -1)[:, :1]
                 
-                return ((masked_current_z_normals - masked_best_z_normal_map.detach()).pow(2) * current_z_mask * render_update_mask).mean()
+                return ((real_size_map_pred - size_map_target.detach()).pow(2) * render_update_mask).mean()
 
-            loss+= z_normals_loss("bilinear") + nearest_loss_raito*z_normals_loss("nearest")
+            loss+= size_map_loss("bilinear") + nearest_loss_raito*size_map_loss("nearest")
 
             loss.backward()
             optimizer.step()
 
 
         fitted_rgb = self.mesh_model.render(background=background, render_cache=render_cache)['image']
-        self.log_part_loss(fitted_rgb, temp_rgb_render, "part loss")
+        self.log_part_loss(fitted_rgb, temp_rgb_render, "part diff old")
+        self.log_part_loss(fitted_rgb, rgb_output, "part diff new")
         self.log_part_image(fitted_rgb, "part_fitted_rgb")
         
-        fitted_z_normals = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
+        fitted_size_map = self.mesh_model.render(background=torch.Tensor([0, 0, 0]).to(self.device),
                                                       use_meta_texture=True, render_cache=render_cache)['image']
 
-        return fitted_rgb, fitted_z_normals
+        return fitted_rgb, fitted_size_map
     
     def log_part_image(self, tensor: torch.Tensor,  name: str, colormap=False):
-        # part_tensor = tensor[:, :, 375:443, 534:600]
-        # scaled_part = torch.nn.functional.interpolate(input = part_tensor, scale_factor = (16, 16))
-        # self.log_train_image(scaled_part, name, colormap)
+        part_tensor = tensor[:, :, 1400:1410, 1420:1430]
+        scaled_part = torch.nn.functional.interpolate(input = part_tensor, scale_factor = (16, 16))
+        self.log_train_image(scaled_part, name, colormap)
 
-        self.log_train_image(tensor, name, colormap)
+        #self.log_train_image(tensor, name, colormap)
 
     def log_part_loss(self, a: torch.Tensor , b: torch.Tensor, name):
-        x = a[:, :, 440:443, 534:537]
-        y = b[:, :, 440:443, 534:537]
+        x = a[:, :, 1400:1410, 1420:1430]
+        y = b[:, :, 1400:1410, 1420:1430]
         loss = (x-y).pow(2).mean()
         logger.info(name +": "+str(loss))
+        # print(str(x))
+        # print(str(y))
 
 
     def log_train_image(self, tensor, name: str, colormap=False):

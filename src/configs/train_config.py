@@ -30,7 +30,7 @@ class RenderConfig:
     # Whether to alternate between the rotating views from the different sides
     alternate_views: bool = True
     # Don't project back if below this threshold to avoid project back bad rendering
-    pixel_ratio_threshold: float = 0.51
+    pixel_ratio_threshold: float = 0.6
 
 @dataclass
 class GuideConfig:
