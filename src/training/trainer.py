@@ -321,7 +321,7 @@ class TEXTure:
             text_string = self.text_string
         logger.info(f'text: {text_string}')
 
-        update_mask, generate_mask, refine_mask = self.calculate_trimap(rgb_render_raw=rgb_render_raw,
+        update_mask, generate_mask, refine_mask, object_mask = self.calculate_trimap(rgb_render_raw=rgb_render_raw,
                                                                         depth_render=depth_render,
                                                                         z_normals=z_normals,
                                                                         size_map = size_map,
@@ -405,7 +405,6 @@ class TEXTure:
         self.log_train_image(rgb_output, name='full_output')
 
         # Project back
-        object_mask = outputs['mask']
         fitted_pred_rgb, current_size_map_fitted = self.project_back(render_cache=render_cache, background=background, rgb_output=rgb_output,
                                                object_mask=object_mask, update_mask=update_mask, z_normals=z_normals,
                                                size_map = size_map, size_map_cache=size_map_cache)
@@ -564,7 +563,7 @@ class TEXTure:
                         1 - only_old_mask_for_vis) + refinement_color_shaded * only_old_mask_for_vis)
             self.log_train_image(trimap_vis, 'trimap')
 
-        return update_mask, generate_mask, refine_mask
+        return update_mask, generate_mask, refine_mask, object_mask
 
     def generate_checkerboard(self, update_mask_inner, improve_z_mask_inner, update_mask_base_inner):
         checkerboard = torch.ones((1, 1, 64 // 2, 64 // 2)).to(self.device)
@@ -592,15 +591,13 @@ class TEXTure:
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
                      size_map: torch.Tensor,
                      size_map_cache: torch.Tensor):
-        # TODO this object mask is not consistent with the one used calculate trimap, does it matter?
-        object_mask = torch.from_numpy(
-            cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((5, 5), np.uint8))).to(
-            object_mask.device).unsqueeze(0).unsqueeze(0)
         render_update_mask = object_mask.clone()
         render_update_mask[update_mask == 0] = 0
+        size_too_bad = size_map < self.bad_size_threshold
+        render_update_mask[size_too_bad] = 0
 
         transition_update_mask, transition_keep_mask  = self.calculate_transition_paddings(render_update_mask)
-        # Do not get out of the object
+        # Do not get out of the object. the object used here must be consitent, or even smaller, with object mask used in calculating trimap, as update mask also includes background.
         transition_update_mask[object_mask == 0] = 0
         transition_keep_mask[object_mask == 0] = 0
 
@@ -609,9 +606,7 @@ class TEXTure:
         temp_rgb_render = temp_outputs['image']
         
         logger.info("z_normals range "+str(z_normals.min())+" "+ str(z_normals.max()))
-        size_too_bad = size_map < self.bad_size_threshold
         
-        render_update_mask[size_too_bad] = 0
         transition_update_mask[size_too_bad] = 0
         transition_keep_mask[size_too_bad] = 0
 
