@@ -502,7 +502,7 @@ class TEXTure:
         # Generate the refine mask based on the z normals, and the edited mask
         refine_mask = torch.zeros_like(depth_render)
         # TODO make this a config
-        refine_mask[size_map > size_map[:, :1, :, :] * 1.3] = 1
+        refine_mask[size_map > size_map_cache[:, :1, :, :] * 1.3] = 1
         # refine_mask[z_normals > z_normals_cache[:, :1, :, :] + self.cfg.guide.z_update_thr] = 1
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_0')
         refine_mask[generate_mask==1] = 0;
