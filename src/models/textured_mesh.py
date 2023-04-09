@@ -8,12 +8,14 @@ from scipy.sparse.linalg import eigsh
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from loguru import logger
 from PIL import Image
 
 from .mesh import Mesh
 from .render import Renderer
 from src.configs.train_config import GuideConfig
+from src import utils
 
 
 def build_cotan_laplacian_torch(points_tensor: torch.Tensor, tris_tensor: torch.Tensor) -> np.ndarray:
@@ -138,6 +140,8 @@ class TexturedMeshModel(nn.Module):
         self.face_attributes = kal.ops.mesh.index_vertices_by_faces(
             self.vt.unsqueeze(0),
             self.ft.long()).detach()
+        
+        self.init_texture2mesh_ratio()
 
         self.n_eigen_values = 20
         self._L = None
@@ -165,6 +169,26 @@ class TexturedMeshModel(nn.Module):
         vertices *= mesh_scale
         vertices[:, 1] += dy
         return vertices
+
+    def init_texture2mesh_ratio(self):
+        #print("face_attributes shapes: \n" +str(self.face_attributes.shape)
+        #    +" \n"+ str(self.mesh.vertices.shape)+" \n"+ str(self.mesh.faces.shape)+" \n"+ str(self.mesh.face_area.shape))
+        #face_attributes torch.Size([1, 7500, 3, 2])
+        #vertices torch.Size([3750, 3])
+        #faces torch.Size([7500, 3])
+        #face_area torch.Size([7500])
+
+
+        vs = self.face_attributes[-1,:,:]
+        vz = torch.full(vs.shape[:-1] + (1,), 0).to(self.device)
+        vs_with_z = torch.cat((vs, vz), -1)
+        v0, v1, v2 = torch.split(vs_with_z, 1, dim=-2)
+        face_area_texture = utils._base_face_areas(v0, v1, v2)[-1, 0].item()
+        face_area_mesh = kal.ops.mesh.face_areas(self.mesh.vertices.unsqueeze(0), self.mesh.faces)[-1,0].item()
+        print("face_area_mesh\n"+str(face_area_mesh) +"\n"+str(face_area_texture))
+
+        self.texture2mesh_ratio = math.sqrt(face_area_mesh / face_area_texture)
+
 
     def spectral_augmentations(self, vertices: torch.Tensor) -> torch.Tensor:
         eigen_values, basis_functions = self.eigens(self.n_eigen_values, 0.0)
@@ -366,11 +390,14 @@ class TexturedMeshModel(nn.Module):
             texture_img = self.meta_texture_img
         else:
             texture_img = self.texture_img
+        
+        # TODO xiaofan, will render cache still work if we do this? as augment_vertices is random
+        #if self.augmentations:
+        #    augmented_vertices = self.augment_vertices()
+        #else:
+        #    augmented_vertices = self.mesh.vertices
 
-        if self.augmentations:
-            augmented_vertices = self.augment_vertices()
-        else:
-            augmented_vertices = self.mesh.vertices
+        augmented_vertices = self.mesh.vertices
 
         if use_median:
             diff = (texture_img - torch.tensor(self.default_color).view(1, 3, 1, 1).to(

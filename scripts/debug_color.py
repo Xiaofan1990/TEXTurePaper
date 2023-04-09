@@ -10,10 +10,10 @@ from PIL import Image
 from src import utils
 
 image = load_image(
-    "C:/Users/xiaof/TEXTurePaper/experiments/test/0009_0275_part_fitted_rgb.jpg")
+    "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0279_fitted.jpg")
 tensor = utils.image2tensor_affecting_input(np.array(image))
 # tensor = tensor[:, :, 1350:1500, 1350:1500]
-tensor = tensor[:, :, 1400:1410, 1420:1430]
+tensor = tensor[:, :, 0:1200, 0:1200]
 print(str(tensor))
 # tensor = F.interpolate(tensor, (120, 120), mode='nearest')
 image = Image.fromarray(utils.tensor2img_affecting_input(tensor))

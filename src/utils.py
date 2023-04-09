@@ -163,3 +163,15 @@ def log_mem_stat(step=''):
         if('bytes.all.current' in key):
             logger.info(key +":" + str(value));
 
+# copied from Kaolin as it's not exposed. 
+def _base_face_areas(face_vertices_0, face_vertices_1, face_vertices_2):
+    """Base function to compute the face areas."""
+    x1, x2, x3 = torch.split(face_vertices_0 - face_vertices_1, 1, dim=-1)
+    y1, y2, y3 = torch.split(face_vertices_1 - face_vertices_2, 1, dim=-1)
+
+    a = (x2 * y3 - x3 * y2) ** 2
+    b = (x3 * y1 - x1 * y3) ** 2
+    c = (x1 * y2 - x2 * y1) ** 2
+    areas = torch.sqrt(a + b + c) * 0.5
+
+    return areas

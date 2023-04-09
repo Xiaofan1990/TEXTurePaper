@@ -28,16 +28,7 @@ class TEXTure:
 
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
-        
-        # otherwise some texture pixels will be hidden when from bad angle
-        pixel_ratio = 2
-        if (self.cfg.guide.texture_interpolation_mode == 'nereast'):
-            pixel_ratio = 1
-
-        #assert self.cfg.guide.texture_resolution < self.cfg.render.train_grid_size \
-        #    * pixel_ratio * (0.9 * self.cfg.render.pixel_ratio_threshold) \
-        #    , 'some texture pixels will be hidden when from bad angle'
-        
+         
         self.paint_step = 0
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -67,8 +58,19 @@ class TEXTure:
 
         self.log_image_cnt = 0
 
+        self.init_bad_size_threshold()
 
         logger.info(f'Successfully initialized {self.cfg.log.exp_name}')
+
+    def init_bad_size_threshold(self):
+        # otherwise some texture pixels will be hidden when from bad angle
+        pixel_ratio = 2
+        if (self.cfg.guide.texture_interpolation_mode == 'nereast'):
+            pixel_ratio = 1
+        # self.cfg.render.train_grid_size / 2 as image plane coordinates range is (-1, 1). Texture coordinates range is (0, 1)
+        print("self.mesh_model.texture2mesh_ratio\n"+str(self.mesh_model.texture2mesh_ratio))
+        self.bad_size_threshold = 1.2 * self.cfg.guide.texture_resolution / (self.mesh_model.texture2mesh_ratio *
+            self.cfg.render.train_grid_size/2 * pixel_ratio)
 
     def init_mesh_model(self) -> nn.Module:
         cache_path = Path('cache') / Path(self.cfg.guide.shape_path).stem
@@ -273,7 +275,13 @@ class TEXTure:
         render_cache = outputs['render_cache']
         rgb_render_raw = outputs['image']  # Render where missing values have special color
         depth_render = outputs['depth']
+        # TODO this is still not accurate. 1) what we care about is actually minial width ratio in certain direction on x,y plane. Not area size, which is height * width
+        # e.g for z_normal, it may reduce width by half and area size will only decrease by half, which is as bad as depth increased by 2, which decreases both height and width by half and decrease area size by 4.
+        # in another word, this is propertional to depth^(-2) * tan(fovyangle/2)^(-2) * (z_normal - tan(angle_from_camera) * something :D). But we need depth * tan(fovyangle/2) * (z_normal - tan(angle_from_camera) * something :D)
+        # 2) this is using average ratio of a face, this doesn't work if that face is very large. 
+        # 3) And Because of 2), we can't fully fix 1) by just multiplying size_map with depth. As it'll make pixel with higher depth has larger size ratio comparing to other pxiel on the same face. Which is totally wrong as we want the opposite. 
         size_map = outputs['size_map']
+        size_map = size_map * math.tan(fovyangle/2) * (-outputs["unnormalized_depth"])
         # Render again with the median value to use as rgb, we shouldn't have color leakage, but just in case
         outputs = self.mesh_model.render(background=background,
                                          render_cache=render_cache, use_median=self.paint_step > 1)
@@ -601,11 +609,13 @@ class TEXTure:
         temp_rgb_render = temp_outputs['image']
         
         logger.info("z_normals range "+str(z_normals.min())+" "+ str(z_normals.max()))
-        size_too_bad = size_map < self.cfg.render.pixel_ratio_threshold
+        size_too_bad = size_map < self.bad_size_threshold
         
         render_update_mask[size_too_bad] = 0
         transition_update_mask[size_too_bad] = 0
         transition_keep_mask[size_too_bad] = 0
+
+        logger.info("self.bad_size_threshold "+str(self.bad_size_threshold))
 
         # TODO size_map_cache shape currently is (1, 3, h, w). But actually we only need (1, 1, h, w)
         size_map_cache[:, 0, :, :] = size_map_cache[:, 0, :, :] * (1-render_update_mask)+ render_update_mask * size_map[:, 0, :, :]
@@ -614,13 +624,13 @@ class TEXTure:
         self.log_train_image(rgb_output * transition_update_mask, 'project_transition')
         # transition keep having issue....
 
-        #for i in range(100, 300, 10):
-        #    self.log_train_image((size_map * (size_map < i/100.0))[0,0], 'size_map_'+str(i), colormap=True)
+        for i in range(30, 100, 5):
+            self.log_train_image((size_map * (size_map < i/100.0))[0,0], 'size_map_'+str(i), colormap=True)
 
         self.log_train_image(temp_rgb_render * size_too_bad, 'size_too_bad')
         self.log_train_image(temp_rgb_render * transition_keep_mask, 'project_transition_keep')
         self.log_train_image(temp_rgb_render * (1-transition_update_mask-transition_keep_mask-render_update_mask), 'project_keep')
-        
+       
         optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
 
         nearest_loss_raito = 0.5

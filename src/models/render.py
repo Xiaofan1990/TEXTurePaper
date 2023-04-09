@@ -3,6 +3,7 @@ import kaolin as kal
 import torch
 import numpy as np
 from loguru import logger
+from src import utils
 class Renderer:
     # from https://github.com/threedle/text2mesh
 
@@ -47,15 +48,9 @@ class Renderer:
     def normalize_depth(self, depth_map):
         assert depth_map.max() <= 0.0, 'depth map should be negative'
         object_mask = depth_map != 0
-        # depth_map[object_mask] = (depth_map[object_mask] - depth_map[object_mask].min()) / (
-        #             depth_map[object_mask].max() - depth_map[object_mask].min())
-        # depth_map = depth_map ** 4
         min_val = 0.5
         depth_map[object_mask] = ((1 - min_val) * (depth_map[object_mask] - depth_map[object_mask].min()) / (
                 depth_map[object_mask].max() - depth_map[object_mask].min())) + min_val
-
-        # depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
-        # depth_map[depth_map == 1] = 0 # Background gets largest value, set to 0
 
         return depth_map
 
@@ -85,19 +80,11 @@ class Renderer:
 
         return image_features.permute(0, 3, 1, 2), mask.permute(0, 3, 1, 2), depth_map.permute(0, 3, 1, 2)
 
-    # copied from Kaolin as it's not exposed. 
-    def _base_face_areas(self, face_vertices_0, face_vertices_1, face_vertices_2):
-        """Base function to compute the face areas."""
-        x1, x2, x3 = torch.split(face_vertices_0 - face_vertices_1, 1, dim=-1)
-        y1, y2, y3 = torch.split(face_vertices_1 - face_vertices_2, 1, dim=-1)
-
-        a = (x2 * y3 - x3 * y2) ** 2
-        b = (x3 * y1 - x1 * y3) ** 2
-        c = (x1 * y2 - x2 * y1) ** 2
-        areas = torch.sqrt(a + b + c) * 0.5
-
-        return areas
-
+    # TODO this is still not accurate. 1) what we care is actually height/width ratio in certain dimension. Not area size, which is height * width
+    # e.g for z_normal, it may reduce width by half and area size will only decrease by half, which is as bad as depth increased by 2, which decreases both height and width by half and decrease area size by 4.
+    # in another word, this is propertional to depth^(-2) * tan(fovyangle/2)^(-2) * (z_normal - tan(angle_from_camera) * something :D). But we need depth * tan(fovyangle/2) * (z_normal - tan(angle_from_camera) * something :D)
+    # 2) this is using average ratio of a face, this doesn't work if that face is very large.
+   
     def calculate_face_size_ratio(self, verts, faces, face_vertices_image):
         # area size of faces
         face_size = kal.ops.mesh.face_areas(verts.unsqueeze(0).to(self.device), faces.to(self.device))
@@ -108,7 +95,7 @@ class Renderer:
         face_vertices_image_with_z = torch.cat((face_vertices_image, face_vertices_image_z), -1)
         # area size of faces on image plane
         faces_0, faces_1, faces_2 = torch.split(face_vertices_image_with_z, 1, dim=-2)
-        face_size_image = self._base_face_areas(faces_0, faces_1, faces_2)
+        face_size_image = utils._base_face_areas(faces_0, faces_1, faces_2)
         face_size_image = torch.cat((face_size_image, face_size_image, face_size_image), -2)
 
         # print("face_size_image shapes: \n" +str(face_size_image.shape)+" \n"+ str(face_size.shape)+" \n" +str(face_vertices_image.shape ))
