@@ -14,7 +14,7 @@ def load(path):
     tensor = utils.image2tensor_affecting_input(np.array(image))
     tensor = tensor[:, :, 745:755, 970:980]
     print(path)
-    print(str(tensor)+"\n")
+    print(str(tensor[-1, 1:3, :, :])+"\n")
     return tensor
 
 load(
@@ -22,7 +22,7 @@ load(
 load(
     "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0255_project_transition.jpg")
 load(
-    "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0273_project_keep.jpg")
+    "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0254_project_update.jpg")
 tensor = load(
     "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0279_fitted.jpg")
 

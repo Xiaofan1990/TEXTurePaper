@@ -69,7 +69,7 @@ class TEXTure:
             pixel_ratio = 1
         # self.cfg.render.train_grid_size / 2 as image plane coordinates range is (-1, 1). Texture coordinates range is (0, 1)
         print("self.mesh_model.texture2mesh_ratio\n"+str(self.mesh_model.texture2mesh_ratio))
-        self.bad_size_threshold = 1.2 * self.cfg.guide.texture_resolution / (self.mesh_model.texture2mesh_ratio *
+        self.bad_size_threshold = 1.4 * self.cfg.guide.texture_resolution / (self.mesh_model.texture2mesh_ratio *
             self.cfg.render.train_grid_size/2 * pixel_ratio)
 
     def init_mesh_model(self) -> nn.Module:
@@ -622,7 +622,6 @@ class TEXTure:
 
         self.log_train_image(rgb_output * render_update_mask, 'project_update')
         self.log_train_image(rgb_output * transition_update_mask, 'project_transition')
-        # transition keep having issue....
 
         for i in range(30, 100, 5):
             self.log_train_image((size_map * (size_map < i/100.0))[0,0], 'size_map_'+str(i), colormap=True)
@@ -640,8 +639,9 @@ class TEXTure:
         transition_keep_mask = transition_keep_mask.flatten()
 
         old_texture_img = self.mesh_model.texture_img.detach().clone()
-        unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1).detach()
-        unmasked_keep = temp_rgb_render.reshape(1, temp_rgb_render.shape[1], -1).detach()
+        unmasked_target = rgb_output.reshape(1, rgb_output.shape[1], -1).detach() * (render_update_mask+transition_update_mask)\
+            + temp_rgb_render.reshape(1, temp_rgb_render.shape[1], -1).detach() * transition_keep_mask
+            
         size_map_target = size_map_cache.reshape(1, size_map_cache.shape[1], -1)[:, :1]
 
         utils.log_mem_stat("before project back")
@@ -656,12 +656,11 @@ class TEXTure:
                 
                 unmasked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)
                 
-                update_loss = ((unmasked_pred - unmasked_target).pow(2) * (render_update_mask+transition_update_mask))
-                tranistion_keep_loss = ((unmasked_pred - unmasked_keep).pow(2) * transition_keep_mask)
+                update_loss = ((unmasked_pred - unmasked_target).pow(2) * (transition_update_mask+transition_keep_mask+render_update_mask)).mean()
                 keep_loss = (self.mesh_model.texture_img -old_texture_img).pow(2).mean()
 
                 # TODO keep_loss actually shouldn't be put together with the rest until it's transformed using texture2mesh ratio and mesh2image ratio.
-                return (update_loss + tranistion_keep_loss).mean() + 1e-4 * keep_loss
+                return update_loss + 1e-4 * keep_loss
 
             loss = color_loss("bilinear", True) + nearest_loss_raito*color_loss("nearest")
             
