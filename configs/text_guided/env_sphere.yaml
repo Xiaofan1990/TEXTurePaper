@@ -1,13 +1,14 @@
 log:
-  exp_name: napoleon
+  exp_name: env_sphere
   
 guide:
-  text: "Napoleon, {} view. (flat light photo), (extremely detailed CG unity 8k wallpaper),  the most beautiful artwork in the world, ((PERFECT FACE))"
+  text: ""
   negative_prompt: "blurry. low quality. canvas frame, ((disfigured)), ((bad art)), ((deformed)),((extra limbs)),((close up)),((b&w)), wierd colors, blurry, (((duplicate))), ((morbid)), ((mutilated)), [out of frame], extra fingers, mutated hands, ((poorly drawn hands)), ((poorly drawn face)), (((mutation))), (((deformed))), ((ugly)), blurry, ((bad anatomy)), (((bad proportions))), ((extra limbs)), cloned face, (((disfigured))), out of frame, ugly, extra limbs, (bad anatomy), gross proportions, (malformed limbs), ((missing arms)), ((missing legs)), (((extra arms))), (((extra legs))), mutated hands, (fused fingers), (too many fingers), (((long neck))), Photoshop, video game, ugly, tiling, poorly drawn hands, poorly drawn feet, poorly drawn face, out of frame, mutation, mutated, extra limbs, extra legs, extra arms, disfigured, deformed, cross-eye, body out of frame, blurry, bad art, bad anatomy, 3d render"
   append_direction: True
-  shape_path: shapes/napoleon.obj
+  shape_path: shapes/sphere.obj
 optim:
   # seed: 3
   seed: 125131
 render:
-  pixel_ratio_threshold: 1
+  radius: 3
+  pixel_ratio_threshold: 0.01

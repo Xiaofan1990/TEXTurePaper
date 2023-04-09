@@ -34,9 +34,9 @@ class TEXTure:
         if (self.cfg.guide.texture_interpolation_mode == 'nereast'):
             pixel_ratio = 1
 
-        assert self.cfg.guide.texture_resolution < self.cfg.render.train_grid_size \
-            * pixel_ratio * (0.9 * self.cfg.render.pixel_ratio_threshold) \
-            , 'some texture pixels will be hidden when from bad angle'
+        #assert self.cfg.guide.texture_resolution < self.cfg.render.train_grid_size \
+        #    * pixel_ratio * (0.9 * self.cfg.render.pixel_ratio_threshold) \
+        #    , 'some texture pixels will be hidden when from bad angle'
         
         self.paint_step = 0
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -250,7 +250,7 @@ class TEXTure:
         data['fovyangle'] = max(math.fabs(max_h_a - min_h_a), math.fabs(max_w_a - min_w_a))
 
     def paint_viewpoint(self, data: Dict[str, Any]):
-        logger.info(f'--- Painting step #{self.paint_step} ---')
+        logger.info(f'--- Painting step #{self.paint_step} ------------------------------------')
         self.adjust_camera(data)
 
         theta, phi, radius, theta_adjustment, phi_adjustment, fovyangle \
@@ -273,6 +273,7 @@ class TEXTure:
         render_cache = outputs['render_cache']
         rgb_render_raw = outputs['image']  # Render where missing values have special color
         depth_render = outputs['depth']
+        size_map = outputs['size_map']
         # Render again with the median value to use as rgb, we shouldn't have color leakage, but just in case
         outputs = self.mesh_model.render(background=background,
                                          render_cache=render_cache, use_median=self.paint_step > 1)
@@ -282,10 +283,11 @@ class TEXTure:
                                              use_meta_texture=True, render_cache=render_cache)
         
         z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
+        z_normals_none_clamp = outputs['normals'][:, -1:, :, :]
+        logger.info("z_normals_none_clamp:" +str(z_normals_none_clamp.min())+" "+str(z_normals_none_clamp.max()))
         normals = outputs['normals'].clamp(0, 1)
         size_map_cache = meta_output['image'].clamp(0, 1)
         edited_mask = meta_output['image'].clamp(0, 1)[:, 1:2]
-        size_map = self.calculate_size_map(z_normals, outputs["unnormalized_depth"], fovyangle)
 
         logger.info("xiaofan z_normals shape:" + str(z_normals.shape))
         logger.info("xiaofan normal shape:" + str(outputs['normals'].shape))
@@ -578,13 +580,6 @@ class TEXTure:
 
         return blurred_area - area, dilated_area - blurred_area         
 
-    # calculate texture pixel size when map to rendering plane
-    def calculate_size_map(self, z_normals, unnormalized_depth, fovyangle):
-        # depth when texture pixel size is 1 in rendering plane with z_normal = 1 and fovyangle = pi/2
-        # TODO calibrate this
-        pixel_size_1_depth = 0.5
-        return z_normals * (pixel_size_1_depth / -unnormalized_depth) * ( 1 / math.tan(fovyangle/2))
-
     def project_back(self, render_cache: Dict[str, Any], background: Any, rgb_output: torch.Tensor,
                      object_mask: torch.Tensor, update_mask: torch.Tensor, z_normals: torch.Tensor,
                      size_map: torch.Tensor,
@@ -619,13 +614,16 @@ class TEXTure:
         self.log_train_image(rgb_output * transition_update_mask, 'project_transition')
         # transition keep having issue....
 
+        #for i in range(100, 300, 10):
+        #    self.log_train_image((size_map * (size_map < i/100.0))[0,0], 'size_map_'+str(i), colormap=True)
+
         self.log_train_image(temp_rgb_render * size_too_bad, 'size_too_bad')
         self.log_train_image(temp_rgb_render * transition_keep_mask, 'project_transition_keep')
         self.log_train_image(temp_rgb_render * (1-transition_update_mask-transition_keep_mask-render_update_mask), 'project_keep')
         
         optimizer = torch.optim.Adam(self.mesh_model.get_params(), lr=self.cfg.optim.lr, betas=(0.9, 0.99), eps=1e-15)
 
-        nearest_loss_raito = 0.1
+        nearest_loss_raito = 0.5
         
         render_update_mask = render_update_mask.flatten()
         transition_update_mask = transition_update_mask.flatten()

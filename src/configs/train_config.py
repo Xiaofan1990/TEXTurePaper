@@ -29,8 +29,8 @@ class RenderConfig:
     views_after: List[Tuple[float, float]] = field(default_factory=[[180,30],[180,150]].copy)
     # Whether to alternate between the rotating views from the different sides
     alternate_views: bool = True
-    # Don't project back if below this threshold to avoid project back bad rendering
-    pixel_ratio_threshold: float = 0.6
+    # Don't project back if below this threshold to avoid project back bad rendering. TODO: auto calibrate this.
+    pixel_ratio_threshold: float = 2
 
 @dataclass
 class GuideConfig:

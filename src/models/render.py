@@ -85,6 +85,34 @@ class Renderer:
 
         return image_features.permute(0, 3, 1, 2), mask.permute(0, 3, 1, 2), depth_map.permute(0, 3, 1, 2)
 
+    # copied from Kaolin as it's not exposed. 
+    def _base_face_areas(self, face_vertices_0, face_vertices_1, face_vertices_2):
+        """Base function to compute the face areas."""
+        x1, x2, x3 = torch.split(face_vertices_0 - face_vertices_1, 1, dim=-1)
+        y1, y2, y3 = torch.split(face_vertices_1 - face_vertices_2, 1, dim=-1)
+
+        a = (x2 * y3 - x3 * y2) ** 2
+        b = (x3 * y1 - x1 * y3) ** 2
+        c = (x1 * y2 - x2 * y1) ** 2
+        areas = torch.sqrt(a + b + c) * 0.5
+
+        return areas
+
+    def calculate_face_size_ratio(self, verts, faces, face_vertices_image):
+        # area size of faces
+        face_size = kal.ops.mesh.face_areas(verts.unsqueeze(0).to(self.device), faces.to(self.device))
+        face_size = face_size.unsqueeze(-1).unsqueeze(-1)
+        face_size = torch.cat((face_size, face_size, face_size), -2)
+
+        face_vertices_image_z = torch.full(face_vertices_image.shape[:-1] + (1,), -1).to(self.device)
+        face_vertices_image_with_z = torch.cat((face_vertices_image, face_vertices_image_z), -1)
+        # area size of faces on image plane
+        faces_0, faces_1, faces_2 = torch.split(face_vertices_image_with_z, 1, dim=-2)
+        face_size_image = self._base_face_areas(faces_0, faces_1, faces_2)
+        face_size_image = torch.cat((face_size_image, face_size_image, face_size_image), -2)
+
+        # print("face_size_image shapes: \n" +str(face_size_image.shape)+" \n"+ str(face_size.shape)+" \n" +str(face_vertices_image.shape ))
+        return face_size_image/face_size 
 
     def render_single_view_texture(self, verts, faces, uv_face_attr, texture_map, elev=0, azim=0, elev_adjustment = 0, azim_adjustment=0, fovyangle = np.pi / 3, radius=2,
                                    look_at_height=0.0, dims=None, background_type='none', render_cache=None, mode = None):
@@ -109,10 +137,19 @@ class Renderer:
                 face_vertices_image, uv_face_attr)
             uv_features = uv_features.detach()
 
+            face_size_ratio = self.calculate_face_size_ratio(verts, faces, face_vertices_image)
+
+            # print("face_size_ratio shapes: \n" +str(face_size_ratio.shape)+" \n"+ str(faces.shape)+" \n" +str(face_vertices_image.shape ))
+
+
+            size_map, _ = kal.render.mesh.rasterize(dims[1], dims[0], face_vertices_camera[:, :, :, -1],
+                                                              face_vertices_image, face_size_ratio)
+
+
         else:
             # logger.info('Using render cache')
-            face_normals, uv_features, face_idx, unnormalized_depth_map, depth_map = \
-                render_cache['face_normals'], render_cache['uv_features'], render_cache['face_idx'], render_cache['unnormalized_depth_map'], render_cache['depth_map']
+            face_normals, uv_features, face_idx, unnormalized_depth_map, depth_map , size_map= \
+                render_cache['face_normals'], render_cache['uv_features'], render_cache['face_idx'], render_cache['unnormalized_depth_map'], render_cache['depth_map'], render_cache['size_map']
         mask = (face_idx > -1).float()[..., None]
 
         image_features = kal.render.mesh.texture_mapping(uv_features, texture_map, mode=mode)
@@ -126,10 +163,10 @@ class Renderer:
         normals_image = face_normals[0][face_idx, :]
 
         render_cache = {'uv_features':uv_features, 'face_normals':face_normals,'face_idx':face_idx\
-            , 'unnormalized_depth_map':unnormalized_depth_map, 'depth_map':depth_map}
+            , 'unnormalized_depth_map':unnormalized_depth_map, 'depth_map':depth_map, 'size_map':size_map}
 
         return image_features.permute(0, 3, 1, 2), mask.permute(0, 3, 1, 2),\
-               unnormalized_depth_map.permute(0, 3, 1, 2), depth_map.permute(0, 3, 1, 2), normals_image.permute(0, 3, 1, 2), render_cache
+               unnormalized_depth_map.permute(0, 3, 1, 2), depth_map.permute(0, 3, 1, 2), normals_image.permute(0, 3, 1, 2), size_map.permute(0, 3, 1, 2), render_cache
 
     def project_uv_single_view(self, verts, faces, uv_face_attr, elev=0, azim=0, radius=2,
                                look_at_height=0.0, dims=None, background_type='none'):
