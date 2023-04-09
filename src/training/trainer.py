@@ -656,11 +656,12 @@ class TEXTure:
                 
                 unmasked_pred = rgb_render.reshape(1, rgb_render.shape[1], -1)
                 
-                update_loss = ((unmasked_pred - unmasked_target).pow(2) * (render_update_mask+transition_update_mask)).mean()
-                tranistion_keep_loss = ((unmasked_pred - unmasked_keep).pow(2) * transition_keep_mask).mean()
+                update_loss = ((unmasked_pred - unmasked_target).pow(2) * (render_update_mask+transition_update_mask))
+                tranistion_keep_loss = ((unmasked_pred - unmasked_keep).pow(2) * transition_keep_mask)
                 keep_loss = (self.mesh_model.texture_img -old_texture_img).pow(2).mean()
 
-                return update_loss + tranistion_keep_loss + 1e-4 * keep_loss
+                # TODO keep_loss actually shouldn't be put together with the rest until it's transformed using texture2mesh ratio and mesh2image ratio.
+                return (update_loss + tranistion_keep_loss).mean() + 1e-4 * keep_loss
 
             loss = color_loss("bilinear", True) + nearest_loss_raito*color_loss("nearest")
             

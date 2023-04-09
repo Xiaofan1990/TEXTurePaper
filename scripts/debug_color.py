@@ -9,12 +9,23 @@ from diffusers.utils import load_image
 from PIL import Image
 from src import utils
 
-image = load_image(
+def load(path):
+    image = load_image(path)
+    tensor = utils.image2tensor_affecting_input(np.array(image))
+    tensor = tensor[:, :, 745:755, 970:980]
+    print(path)
+    print(str(tensor)+"\n")
+    return tensor
+
+load(
+    "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0272_project_transition_keep.jpg")
+load(
+    "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0255_project_transition.jpg")
+load(
+    "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0273_project_keep.jpg")
+tensor = load(
     "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0279_fitted.jpg")
-tensor = utils.image2tensor_affecting_input(np.array(image))
-# tensor = tensor[:, :, 1350:1500, 1350:1500]
-tensor = tensor[:, :, 0:1200, 0:1200]
-print(str(tensor))
+
 # tensor = F.interpolate(tensor, (120, 120), mode='nearest')
 image = Image.fromarray(utils.tensor2img_affecting_input(tensor))
 
