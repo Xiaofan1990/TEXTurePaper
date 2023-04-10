@@ -455,7 +455,7 @@ class TEXTure:
             cv2.erode(mask[0, 0].detach().cpu().numpy(), kernel)).to(
             mask.device).unsqueeze(0).unsqueeze(0)
         return mask
-
+     # this will remove both dot and lines thiner than kernal
     def remove_small_area(self, mask, kernel):
         mask = torch.from_numpy(
             cv2.erode(mask[0, 0].detach().cpu().numpy(), kernel)).to(
@@ -471,7 +471,7 @@ class TEXTure:
                          mask: torch.Tensor):
         object_mask = torch.ones_like(depth_render)
         object_mask[depth_render == 0] = 0
-        exact_generate_mask = (size_map_cache[:,:1,:,:] < 1e-3).float()
+        exact_generate_mask = (size_map_cache[:,:1,:,:] < 1e-3 * self.bad_size_threshold).float()
         exact_generate_mask[object_mask==0] = 0
         # erode object mask to avoid background color leakaging into our texture. This mostly only happen when init latent is not randomized.
         object_mask = torch.from_numpy(
@@ -590,8 +590,9 @@ class TEXTure:
                      size_map_cache: torch.Tensor):
         render_update_mask = object_mask.clone()
         render_update_mask[update_mask == 0] = 0
-        size_too_bad = size_map < self.bad_size_threshold
-        render_update_mask[size_too_bad] = 0
+        size_too_bad = (size_map < self.bad_size_threshold).float()
+        size_too_bad = utils.remove_small_dot(size_too_bad)
+        render_update_mask[size_too_bad==1] = 0
 
         transition_update_mask, transition_keep_mask  = self.calculate_transition_paddings(render_update_mask)
         # Do not get out of the object. the object used here must be consitent, or even smaller, with object mask used in calculating trimap, as update mask also includes background.
@@ -604,8 +605,8 @@ class TEXTure:
         
         logger.info("z_normals range "+str(z_normals.min())+" "+ str(z_normals.max()))
         
-        transition_update_mask[size_too_bad] = 0
-        transition_keep_mask[size_too_bad] = 0
+        transition_update_mask[size_too_bad==1] = 0
+        transition_keep_mask[size_too_bad==1] = 0
 
         logger.info("self.bad_size_threshold "+str(self.bad_size_threshold))
 

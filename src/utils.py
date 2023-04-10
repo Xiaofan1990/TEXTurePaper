@@ -12,6 +12,7 @@ import einops
 from matplotlib import cm
 import torch.nn.functional as F
 from loguru import logger
+import cv2
 
 
 def get_view_direction(thetas, phis, overhead, front):
@@ -175,3 +176,11 @@ def _base_face_areas(face_vertices_0, face_vertices_1, face_vertices_2):
     areas = torch.sqrt(a + b + c) * 0.5
 
     return areas
+
+    # remove small dot
+def remove_small_dot(mask):
+    size = 5
+    avgPool2d = torch.nn.AvgPool2d(kernel_size = (size, size), padding=2, stride = (1, 1))
+    summed_mask = avgPool2d(mask) * size * size
+    mask[summed_mask<4] = 0
+    return mask

@@ -3,6 +3,16 @@ import cv2
 import torch
 import numpy as np
 
+x=torch.zeros(1,1,9,9)
+
+x[0,0, 0:2, 0:2] = 1
+x[0,0,5,5] = 1
+
+x = utils.remove_small_dot(x)
+print(x)
+
+
+
 #def calculate_transition_paddings(area):
 #    kernel_size = 5
 
@@ -27,18 +37,18 @@ import numpy as np
 #print(str(c))
 
 
-a = np.pi / 3
+#a = np.pi / 3
 
-size = 1200
+#size = 1200
 
-min_h = 100 
-min_w = 200 
-max_h = 800
-max_w = 1000
+#min_h = 100 
+#min_w = 200 
+#max_h = 800
+#max_w = 1000
 
-print(utils.y2angle(min_h, a, size))
-print(utils.y2angle(min_w, a, size))
-print(utils.y2angle(max_h, a, size))
-print(utils.y2angle(max_w, a, size))
+#print(utils.y2angle(min_h, a, size))
+#print(utils.y2angle(min_w, a, size))
+#print(utils.y2angle(max_h, a, size))
+#print(utils.y2angle(max_w, a, size))
 
 
