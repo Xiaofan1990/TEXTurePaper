@@ -63,6 +63,7 @@ class TEXTure:
         logger.info(f'Successfully initialized {self.cfg.log.exp_name}')
 
     def init_bad_size_threshold(self):
+        self.size_map_normalizer = 0.1
         # otherwise some texture pixels will be hidden when from bad angle
         pixel_ratio = 2
         if (self.cfg.guide.texture_interpolation_mode == 'nereast'):
@@ -70,7 +71,7 @@ class TEXTure:
         # self.cfg.render.train_grid_size / 2 as image plane coordinates range is (-1, 1). Texture coordinates range is (0, 1)
         print("self.mesh_model.texture2mesh_ratio\n"+str(self.mesh_model.texture2mesh_ratio))
         self.bad_size_threshold = 1.4 * self.cfg.guide.texture_resolution / (self.mesh_model.texture2mesh_ratio *
-            self.cfg.render.train_grid_size/2 * pixel_ratio)
+            self.cfg.render.train_grid_size/2 * pixel_ratio) * self.size_map_normalizer
 
     def init_mesh_model(self) -> nn.Module:
         cache_path = Path('cache') / Path(self.cfg.guide.shape_path).stem
@@ -281,7 +282,9 @@ class TEXTure:
         # 2) this is using average ratio of a face, this doesn't work if that face is very large. 
         # 3) And Because of 2), we can't fully fix 1) by just multiplying size_map with depth. As it'll make pixel with higher depth has larger size ratio comparing to other pxiel on the same face. Which is totally wrong as we want the opposite. 
         size_map = outputs['size_map']
-        size_map = size_map * math.tan(fovyangle/2) * (-outputs["unnormalized_depth"])
+        size_map = size_map * math.tan(fovyangle/2) * (-outputs["unnormalized_depth"]) * self.size_map_normalizer
+        # otherwise can't project back to meta texture
+        assert size_map.max() < 1
         # Render again with the median value to use as rgb, we shouldn't have color leakage, but just in case
         outputs = self.mesh_model.render(background=background,
                                          render_cache=render_cache, use_median=self.paint_step > 1)
@@ -502,7 +505,7 @@ class TEXTure:
         # Generate the refine mask based on the z normals, and the edited mask
         refine_mask = torch.zeros_like(depth_render)
         # TODO make this a config
-        refine_mask[size_map > size_map_cache[:, :1, :, :] * 1.3] = 1
+        refine_mask[size_map > size_map_cache[:, :1, :, :] * 1.5] = 1
         # refine_mask[z_normals > z_normals_cache[:, :1, :, :] + self.cfg.guide.z_update_thr] = 1
         self.log_train_image(rgb_render_raw * refine_mask, name='refine_mask_step_0')
         refine_mask[generate_mask==1] = 0;
@@ -618,8 +621,8 @@ class TEXTure:
         self.log_train_image(rgb_output * render_update_mask, 'project_update')
         self.log_train_image(rgb_output * transition_update_mask, 'project_transition')
 
-        for i in range(30, 100, 5):
-            self.log_train_image((size_map * (size_map < i/100.0))[0,0], 'size_map_'+str(i), colormap=True)
+        #for i in range(10, 100, 10):
+        #    self.log_train_image((size_map * (size_map < i/100.0))[0,0], 'size_map_'+str(i), colormap=True)
 
         self.log_train_image(temp_rgb_render * size_too_bad, 'size_too_bad')
         self.log_train_image(temp_rgb_render * transition_keep_mask, 'project_transition_keep')
