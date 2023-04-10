@@ -125,7 +125,11 @@ class TexturedMeshModel(nn.Module):
         self.renderer = Renderer(device=self.device, dim=(render_grid_size, render_grid_size),
                                                            interpolation_mode=self.opt.texture_interpolation_mode)
         self.env_sphere, self.mesh = self.init_meshes()
-        self.default_color = [0.8, 0.1, 0.8]
+        # TODO this default color can cause G color to loss gradient when project back. Not sure why. Maybe color became negative?
+        # self.default_color = [0.8, 0.1, 0.8]
+   
+        self.default_color = [0.5, 0.5, 0.5]
+        
         self.background_sphere_colors, self.texture_img = self.init_paint()
         self.meta_texture_img = nn.Parameter(torch.zeros_like(self.texture_img))
         if self.opt.reference_texture:
@@ -266,7 +270,12 @@ class TexturedMeshModel(nn.Module):
                 list(color)).float().to(A.device)
         return init_color_in_latent
 
+    def get_unpaint_mask(self, size_map_cache):
+        return (size_map_cache[:,:1,:,:] < 1e-3).float()
+
     def change_default_to_median(self):
+        return
+        # TODO remove this.
         diff = (self.texture_img - torch.tensor(self.default_color).view(1, 3, 1, 1).to(
             self.device)).abs().sum(axis=1)
         default_mask = (diff < 0.1).float().unsqueeze(0)
@@ -399,15 +408,17 @@ class TexturedMeshModel(nn.Module):
 
         augmented_vertices = self.mesh.vertices
 
-        if use_median:
-            diff = (texture_img - torch.tensor(self.default_color).view(1, 3, 1, 1).to(
-                self.device)).abs().sum(axis=1)
-            default_mask = (diff < 0.1).float().unsqueeze(0)
-            median_color = texture_img[0, :].reshape(3, -1)[:, default_mask.flatten() == 0].mean(
-                axis=1)
-            texture_img = texture_img.clone()
-            with torch.no_grad():
-                texture_img.reshape(3, -1)[:, default_mask.flatten() == 1] = median_color.reshape(-1, 1)
+        # TODO Xiaofan why do we need this? to prevent color leakage. E.g impaint will follow the color tone of default color if we don't play with masks properly
+        #if use_median:
+        #    # This is ruining everything since we changed default color to grey, which is commonly used.
+        #    diff = (texture_img - torch.tensor(self.default_color).view(1, 3, 1, 1).to(
+        #        self.device)).abs().sum(axis=1)
+        #    default_mask = (diff < 0.1).float().unsqueeze(0)
+        #    median_color = texture_img[0, :].reshape(3, -1)[:, default_mask.flatten() == 0].mean(
+        #        axis=1)
+        #    texture_img = texture_img.clone()
+        #    with torch.no_grad():
+        #        texture_img.reshape(3, -1)[:, default_mask.flatten() == 1] = median_color.reshape(-1, 1)
         background_type = 'none'
         use_render_back = False
         if background is not None and type(background) == str:

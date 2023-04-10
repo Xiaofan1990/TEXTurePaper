@@ -427,12 +427,7 @@ class TEXTure:
                                          dims=(dim, dim), background='white')
         z_normals = outputs['normals'][:, -1:, :, :].clamp(0, 1)
         rgb_render = outputs['image']  # .permute(0, 2, 3, 1).contiguous().clamp(0, 1)
-        diff = (rgb_render.detach() - torch.tensor(self.mesh_model.default_color).view(1, 3, 1, 1).to(
-            self.device)).abs().sum(axis=1)
-        uncolored_mask = (diff < 0.1).float().unsqueeze(0)
-        rgb_render = rgb_render * (1 - uncolored_mask) + utils.color_with_shade([0.85, 0.85, 0.85], z_normals=z_normals,
-                                                                                light_coef=0.3) * uncolored_mask
-
+        
         outputs_with_median = self.mesh_model.render(theta=theta, phi=phi, radius=radius,
                                                      dims=(dim, dim), use_median=True,
                                                      render_cache=outputs['render_cache'])
@@ -440,6 +435,10 @@ class TEXTure:
         meta_output = self.mesh_model.render(theta=theta, phi=phi, radius=radius,
                                              background=torch.Tensor([0, 0, 0]).to(self.device),
                                              use_meta_texture=True, render_cache=outputs['render_cache'])
+        size_map_cache = meta_output['image'].clamp(0, 1)
+        uncolored_mask = (size_map_cache[:,:1,:,:] < 1e-3).float()
+        rgb_render = rgb_render * (1 - uncolored_mask) + utils.color_with_shade([0.85, 0.85, 0.85], z_normals=z_normals,
+                                                                                light_coef=0.3) * uncolored_mask
         pred_z_normals = meta_output['image'][:, :1].detach()
         rgb_render = rgb_render.permute(0, 2, 3, 1).contiguous().clamp(0, 1).detach()
         texture_rgb = outputs_with_median['texture_map'].permute(0, 2, 3, 1).contiguous().clamp(0, 1).detach()
@@ -472,17 +471,12 @@ class TEXTure:
                          mask: torch.Tensor):
         object_mask = torch.ones_like(depth_render)
         object_mask[depth_render == 0] = 0
+        exact_generate_mask = (size_map_cache[:,:1,:,:] < 1e-3).float()
+        exact_generate_mask[object_mask==0] = 0
         # erode object mask to avoid background color leakaging into our texture. This mostly only happen when init latent is not randomized.
         object_mask = torch.from_numpy(
             cv2.erode(object_mask[0, 0].detach().cpu().numpy(), np.ones((7, 7), np.uint8))).to(
             object_mask.device).unsqueeze(0).unsqueeze(0)
-        #TODO this is not robust at all
-        diff = (rgb_render_raw.detach() - torch.tensor(self.mesh_model.default_color).view(1, 3, 1, 1).to(
-            self.device)).abs().sum(axis=1)
-        exact_generate_mask = (diff < 0.1).float().unsqueeze(0)
-
-
-
         
         # small area kernel size shold at least be render_resolution/vae_input_size, which is 512 ??
         small_are_kernel_size = math.ceil(self.cfg.render.train_grid_size/512)
@@ -687,11 +681,11 @@ class TEXTure:
         return fitted_rgb, fitted_size_map
     
     def log_part_image(self, tensor: torch.Tensor,  name: str, colormap=False):
-        part_tensor = tensor[:, :, 1400:1410, 1420:1430]
-        scaled_part = torch.nn.functional.interpolate(input = part_tensor, scale_factor = (16, 16))
-        self.log_train_image(scaled_part, name, colormap)
+        #part_tensor = tensor[:, :, 1400:1410, 1420:1430]
+        #scaled_part = torch.nn.functional.interpolate(input = part_tensor, scale_factor = (16, 16))
+        #self.log_train_image(scaled_part, name, colormap)
 
-        #self.log_train_image(tensor, name, colormap)
+        self.log_train_image(tensor, name, colormap)
 
     def log_part_loss(self, a: torch.Tensor , b: torch.Tensor, name):
         x = a[:, :, 1400:1410, 1420:1430]

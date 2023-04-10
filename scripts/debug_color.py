@@ -12,7 +12,7 @@ from src import utils
 def load(path):
     image = load_image(path)
     tensor = utils.image2tensor_affecting_input(np.array(image))
-    tensor = tensor[:, :, 745:755, 970:980]
+    #tensor = tensor[:, :, 745:755, 970:980]
     print(path)
     print(str(tensor[-1, 1:3, :, :])+"\n")
     return tensor
@@ -24,7 +24,7 @@ load(
 load(
     "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0254_project_update.jpg")
 tensor = load(
-    "C:/Users/xiaof/TEXTurePaper/experiments/test/0006_0279_fitted.jpg")
+    "C:/Users/xiaof/TEXTurePaper/experiments/test/step_00010_texture.png")
 
 # tensor = F.interpolate(tensor, (120, 120), mode='nearest')
 image = Image.fromarray(utils.tensor2img_affecting_input(tensor))
