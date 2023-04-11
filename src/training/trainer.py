@@ -345,8 +345,10 @@ class TEXTure:
         #inpaint
         self.diffusion.use_inpaint = self.cfg.guide.use_inpainting and self.paint_step > 1
         inputs = rgb_render.detach()
+        random_init_latent = False
         if self.paint_step == 1:
             inputs = None
+            random_init_latent = True
         impaint_img, steps_vis = self.diffusion.img2img_step_with_controlnet(text_z, inputs,
                                                                     depth_render.detach(),
                                                                     guidance_scale=self.cfg.guide.guidance_scale,
@@ -354,7 +356,7 @@ class TEXTure:
                                                                     refine_mask = refine_mask,
                                                                     fixed_seed=self.cfg.optim.seed,
                                                                     num_inference_steps = 20,
-                                                                    random_init_latent = True,
+                                                                    random_init_latent = random_init_latent,
                                                                     intermediate_vis=self.cfg.log.vis_diffusion_steps)
         self.log_train_image(impaint_img, name='inpaint_out')
         self.log_diffusion_steps(steps_vis, "inpaint")

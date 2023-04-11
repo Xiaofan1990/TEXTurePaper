@@ -180,7 +180,24 @@ def _base_face_areas(face_vertices_0, face_vertices_1, face_vertices_2):
     # remove small dot
 def remove_small_dot(mask):
     size = 5
-    avgPool2d = torch.nn.AvgPool2d(kernel_size = (size, size), padding=2, stride = (1, 1))
+    avgPool2d = torch.nn.AvgPool2d(kernel_size = (size, size), padding=size//2, stride = (1, 1))
     summed_mask = avgPool2d(mask) * size * size
     mask[summed_mask<4] = 0
     return mask
+
+
+def fill_masked_with_mean(image, mask, size):
+    assert size%2==1
+    image = image*(1-mask)
+    # not directly using sizexsize kernel as it's too slow
+    avgPool = torch.nn.AvgPool2d(kernel_size = (1, size), padding= (0, size//2), stride = (1, 1))
+    image_mean = avgPool(image)
+    image_mean = avgPool(image_mean.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
+    mask_mean = avgPool(1-mask)
+    mask_mean = avgPool(mask_mean.permute(0, 1, 3, 2)).permute(0, 1, 3, 2).clamp(min=1./(size*size))
+    image_mean = image_mean / mask_mean
+    mask = mask.squeeze()
+    image[:, :, mask==1] = image_mean[:, :, mask==1]
+    return image
+
+

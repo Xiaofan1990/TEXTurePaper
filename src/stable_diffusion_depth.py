@@ -485,21 +485,26 @@ class StableDiffusion(nn.Module):
         if inputs is None:
             latents = None
         else:
-            # width = 512
             width = 512
-            
+
+            if update_mask is not None and self.use_inpaint:
+                inputs = utils.fill_masked_with_mean(inputs, update_mask, 65)
+
             pred_rgb_512 = F.interpolate(inputs, (width, width), mode='bilinear',
                                          align_corners=False)
-            latents = self.encode_imgs(pred_rgb_512)
-            logger.info("xiaofan: latents "+str(latents.shape))
+            
+
+
             
             if update_mask is not None and self.use_inpaint:
-
-                update_mask_512 = F.interpolate(update_mask, (width, width))
+                update_mask_64 = F.interpolate(update_mask, (64, 64), mode='nearest')
+                update_mask_512 = F.interpolate(update_mask_64, (width, width), mode='nearest')
                 
                 update_mask_512[update_mask_512 < 0.5] = 0
                 update_mask_512[update_mask_512 >= 0.5] = 1
-                
+
+                # pred_rgb_512 = utils.fill_masked_with_mean(pred_rgb_512, update_mask_512, 17)
+
                 masked_inputs = pred_rgb_512 * (update_mask_512 < 0.5) + 0.5 * (update_mask_512 >= 0.5)
 
                 # self.trainer.log_train_image(pred_rgb_512 * (update_mask_512 < 0.5), "masked_inputs")
@@ -507,6 +512,8 @@ class StableDiffusion(nn.Module):
                 self.trainer.log_train_image(masked_inputs, "sd_img_512_masked")
 
                 masked_latents = self.encode_imgs(masked_inputs)
+            
+            latents = self.encode_imgs(pred_rgb_512)
 
         if update_mask is not None:
             update_mask = F.interpolate(update_mask, (64, 64), mode='nearest')
