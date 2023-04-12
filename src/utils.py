@@ -194,7 +194,12 @@ def fill_masked_with_mean(image, mask, size):
     image_mean = avgPool(image)
     image_mean = avgPool(image_mean.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
     mask_mean = avgPool(1-mask)
-    mask_mean = avgPool(mask_mean.permute(0, 1, 3, 2)).permute(0, 1, 3, 2).clamp(min=1./(size*size))
+    mask_mean = avgPool(mask_mean.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
+    
+    # fill with grey
+    image_mean[:, :, mask_mean[0,0]==0]=0.5
+    mask_mean[mask_mean==0]=1
+
     image_mean = image_mean / mask_mean
     mask = mask.squeeze()
     image[:, :, mask==1] = image_mean[:, :, mask==1]

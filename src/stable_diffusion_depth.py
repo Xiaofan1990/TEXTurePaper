@@ -492,22 +492,21 @@ class StableDiffusion(nn.Module):
 
             pred_rgb_512 = F.interpolate(inputs, (width, width), mode='bilinear',
                                          align_corners=False)
-            
 
-
-            
             if update_mask is not None and self.use_inpaint:
                 update_mask_64 = F.interpolate(update_mask, (64, 64), mode='nearest')
                 update_mask_512 = F.interpolate(update_mask_64, (width, width), mode='nearest')
                 
                 update_mask_512[update_mask_512 < 0.5] = 0
-                update_mask_512[update_mask_512 >= 0.5] = 1
+                update_mask_512[update_mask_512 > 0] = 1.
 
                 # pred_rgb_512 = utils.fill_masked_with_mean(pred_rgb_512, update_mask_512, 17)
 
-                masked_inputs = pred_rgb_512 * (update_mask_512 < 0.5) + 0.5 * (update_mask_512 >= 0.5)
+                masked_inputs = pred_rgb_512 * (1.-update_mask_512) + 0.5 * (update_mask_512)
 
                 # self.trainer.log_train_image(pred_rgb_512 * (update_mask_512 < 0.5), "masked_inputs")
+                logger.info("pred_rgb_512.dtype\n"+str(pred_rgb_512.dtype)+" "+str(update_mask_512.dtype))
+                self.trainer.log_train_image(pred_rgb_512 * (1-update_mask_512), "sd_img_512_1")
                 self.trainer.log_train_image(pred_rgb_512, "sd_img_512")
                 self.trainer.log_train_image(masked_inputs, "sd_img_512_masked")
 
